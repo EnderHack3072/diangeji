@@ -116,7 +116,7 @@ WebSocket 客户端原来无帧长上限、缓冲区 O(n²) 追加、ping 递归
 
 ## 17 — 新增测试套件
 
-`tests/` 下 314 项测试，覆盖：
+`tests/` 下 324 项测试，覆盖：
 
 - `test_core.py` 曲库匹配、队列状态机、模型
 - `test_sources.py` 音源优先级、直链刷新、空闲随机
@@ -225,7 +225,7 @@ HEAD 不带 body、403 后连接可继续、WebSocket 失败关 socket、
 ## 30 — 测试从 182 项扩到 303 项
 
 新增 `test_sources.py`（40）、`test_app.py`（45）、`test_layering.py`（13）、
-`test_regressions.py`（29），并修正了若干与真实 API 不符的测试假设。
+`test_regressions.py`（39），并修正了若干与真实 API 不符的测试假设。
 
 ## 31 — 修复控制台中文日志乱码
 
@@ -344,4 +344,37 @@ pip → `%LOCALAPPDATA%\点歌姬数据`，都不再嵌套。
 
 原来的测试只断言了「不等于 cwd」，没看结果形状，所以没拦住 ——
 补了一条 `test_installed_data_dir_has_no_double_nesting`。
+
+## 43 — 补齐各模块详细文档（docs/modules/）
+
+原来只有一份 `architecture.md` 讲整体分层，**每个子包具体怎么用没写** ——
+函数签名、实现要点、踩过的坑全靠读代码。
+
+新增 `docs/modules/` 下 9 份文档：
+
+| 文件 | 内容 |
+|---|---|
+| `README.md` | 索引 + 三条共同约定 |
+| `infra.md` | 路径三形态表格、`atomic_write()` 为什么要随机后缀 |
+| `core.md` | 队列的锁外刷新三段式、CAS 为什么单独存在、快照结构 |
+| `sources.md` | `MusicSource` 四个方法、「加一个音源」的完整步骤 |
+| `services.md` | `skip_if_finished()` 双跳歌修复的来龙去脉 |
+| `live.md` | 协议包头表、WBI `invalidate()` 的用途、5 步排错顺序 |
+| `auth.md` | 三条登录路径、`write()` 为什么拒绝空内容 |
+| `web.md` | `_drain()` 先读体的原因、Windows 端口复用陷阱 |
+| `ui.md` | `launch()` 为什么必收 app、`quit()` 三处修复 |
+| `utils.md` | WS 客户端为什么自己写、`close(graceful=False)` 的意义 |
+
+所有签名都用 AST 从源码里提取后核对过，不是凭印象写的
+（第一版把 `Config` 写成 `room`/`idle`/`dirs`，实际是
+`room_id`/`idle_enabled`/`local_dirs`，已订正）。
+
+配套测试：每个子包文档必须存在且超过 800 字符（防占位），
+索引里的链接必须都能打开 —— 加测试时当场抓到一条指向不存在的
+`architecture.md` 的链接，已修成 `../architecture.md`。
+
+## 44 — 测试扩到 324 项
+
+`test_regressions.py` 29 → 39：9 份模块文档的存在性与内容厚度、
+索引链接可达性。
 

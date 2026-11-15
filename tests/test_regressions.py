@@ -388,3 +388,25 @@ class TestDocsExist:
         assert numbers[0] == 1, "编号应当从 1 开始"
         assert len(numbers) == len(set(numbers)), "编号重复"
         assert numbers == list(range(1, len(numbers) + 1)), "编号不连续"
+
+    @pytest.mark.parametrize("module", [
+        "infra", "core", "sources", "services", "live", "auth", "web", "ui", "utils",
+    ])
+    def test_every_module_has_a_doc(self, module):
+        """每个子包都必须有详细文档，不能只写个索引糊弄。"""
+        root = Path(__file__).resolve().parents[1]
+        path = root / "docs" / "modules" / f"{module}.md"
+        assert path.is_file(), f"缺少模块文档：{path.name}"
+        assert len(path.read_text(encoding="utf-8")) > 800, \
+            f"{path.name} 内容太薄，看起来像占位"
+
+    def test_module_docs_index_links_resolve(self):
+        """索引里列的每一份文档都要真的存在。"""
+        import re
+        root = Path(__file__).resolve().parents[1]
+        index = root / "docs" / "modules" / "README.md"
+        text = index.read_text(encoding="utf-8")
+        links = re.findall(r"\]\(([a-z]+\.md)\)", text)
+        assert links, "索引里没有任何模块链接"
+        for link in links:
+            assert (index.parent / link).is_file(), f"索引指向了不存在的 {link}"

@@ -122,9 +122,19 @@ diangeji --headless   # 只跑服务，不开界面
 │       ├── text.py
 │       └── timeutil.py
 │
-├── tests/                  # 314 项测试，pytest
+├── tests/                  # 324 项测试，pytest
 └── docs/
-    └── architecture.md     # 分层约定与依赖规则
+    ├── architecture.md     # 分层约定与依赖规则
+    └── modules/            # 各子包详细文档
+        ├── README.md       #   索引 + 共同约定
+        ├── infra.md        #   paths / config / constants / logging
+        ├── core.md         #   模型、播放队列、曲库
+        ├── sources.md      #   本地 / QQ 音乐 / 注册表
+        ├── services.md     #   点歌解析、空闲随机
+        ├── live.md         #   弹幕协议、WBI、指令、长连接
+        ├── auth.md         #   cookie、扫码、CDP
+        ├── web.md          #   路由、安全、模板
+        └── ui.md           #   Tkinter 主窗口
 ```
 
 ### 分层规则
@@ -146,6 +156,9 @@ diangeji --headless   # 只跑服务，不开界面
 
 装配只发生在 `app.py`，它是唯一一处「知道谁住在哪」的代码。
 想换掉某个实现（比如加网易云音源），改 `build_application()` 一处即可。
+
+想看每个模块**具体怎么用**（函数签名、实现要点、踩过的坑），
+进 [`docs/modules/`](docs/modules/README.md)。
 
 这些规则由 `tests/test_layering.py` 用 AST 扫描强制执行，不是靠自觉。
 
@@ -258,7 +271,7 @@ curl -X POST http://127.0.0.1:8770/api/order \
 
 ```bash
 pip install -e ".[dev]"
-pytest                         # 314 项
+pytest                         # 324 项
 pytest -q tests/test_core.py   # 单文件
 ```
 
@@ -279,7 +292,7 @@ python scripts/build.py
 | `test_infra.py` (58) | cookie 原子写、配置、路径、文本工具 |
 | `test_app.py` (45) | 组合根装配、HTTP 生命周期、模板契约、打包配置、点歌 worker |
 | `test_layering.py` (13) | **架构守卫**：AST 扫依赖方向，违反就红 |
-| `test_regressions.py` (29) | **回归守卫**：修过的 bug 不许复活 |
+| `test_regressions.py` (39) | **回归守卫**：修过的 bug 不许复活 |
 
 后两个文件不测功能，测的是「代码库的整体性质」。
 比如 `test_layering.py` 会断言「没有任何模块 import `ui`」「`core` 不依赖上层」；

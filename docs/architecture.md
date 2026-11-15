@@ -2,6 +2,12 @@
 
 这份文档说明**为什么这么分层**、**依赖往哪走**、**新增功能该放哪**。
 
+> 想知道每个模块的**具体接口和实现细节**，看
+> [`modules/`](modules/README.md) —— 那里按子包分文件写，
+> 每个模块一份（`infra` / `core` / `sources` / `services` / `live` /
+> `auth` / `web` / `ui` / `utils`）。
+> 本文只讲整体形状。
+
 ---
 
 ## 一句话
@@ -305,7 +311,7 @@ B 站弹幕服务器
 | `test_live.py` / `test_web.py` | 协议与 HTTP 边界 | 103 |
 | `test_infra.py` / `test_app.py` | 基础设施与装配 | 103 |
 | `test_layering.py` | **架构规则没被破坏** | 13 |
-| `test_regressions.py` | **修过的 bug 没有复活** | 29 |
+| `test_regressions.py` | **修过的 bug 没有复活** | 39 |
 
 后两类是「元测试」：它们不测功能，测的是「代码库的整体性质」。
 `test_layering.py` 用 AST 扫依赖方向；`test_regressions.py` 里每一条都对应
