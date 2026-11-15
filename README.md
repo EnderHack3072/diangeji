@@ -122,7 +122,7 @@ diangeji --headless   # 只跑服务，不开界面
 │       ├── text.py
 │       └── timeutil.py
 │
-├── tests/                  # 377 项测试，pytest
+├── tests/                  # 382 项测试，pytest
 └── docs/
     ├── architecture.md     # 分层约定与依赖规则
     └── modules/            # 各子包详细文档
@@ -201,8 +201,18 @@ diangeji --headless   # 只跑服务，不开界面
 | `logs/diangeji.log` | 运行日志（2MB 轮转，留 3 份） |
 | `_edgeprofile/` | 浏览器登录用的独立配置目录 |
 
-可以用环境变量 `DIANGE_DATA` 改位置（打包版、源码运行、pip 安装都适用，
-优先级最高）。
+改位置有两种方式，**优先级从高到低**：
+
+1. `--data-dir <目录>` —— 命令行显式指定，临时换一份数据时用
+2. 环境变量 `DIANGE_DATA` —— 适合长期固定（打包版、源码运行、pip 安装都适用）
+3. 都不给 → 默认位置（`<程序目录>/点歌姬数据`）
+
+> 早先这里写的是「环境变量优先级最高」，不准确：命令行给了
+> `--data-dir` 时**它就是生效的那个**，环境变量只作为默认值兜底。
+
+**这三种方式会一起改变日志的位置** —— 上表里所有路径都是相对于「当前数据目录」
+的，日志也不例外。早先 `--data-dir` 只搬走了配置和曲库，日志仍写在程序旁边，
+这是个 bug（见 CHANGELOG 49），已修。
 
 > Cookie 是**明文**存在这里的。发给别人请打包时排除这两个文件。
 
@@ -271,7 +281,7 @@ curl -X POST http://127.0.0.1:8770/api/order \
 
 ```bash
 pip install -e ".[dev]"
-pytest                         # 377 项
+pytest                         # 382 项
 pytest -q tests/test_core.py   # 单文件
 ```
 

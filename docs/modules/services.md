@@ -81,12 +81,36 @@ self.next()          # ← 两步之间没有锁
 ### 空闲随机
 
 ```python
-_maybe_idle()      # 队列空了且 idle 打开时，随机塞一首
-_idle_once()       # 真正的选歌逻辑
-_pool()            # 自定义池优先，没有就用收藏夹
+_maybe_idle()          # 队列空了且 idle 打开时，随机塞一首
+_pick_idle_item(picks) # 锁外选歌：这里会联网，调用方必须已放锁
+_pool()                # 自定义池优先，没有就用收藏夹
 ```
 
 自定义池来自 `点歌姬数据/idle_pool.txt`，每行「歌手 歌名」，`#` 开头跳过。
+
+**`_idle_lock` 只表示「这一轮由我负责补歌」，不保护网络请求。**
+
+早先 `_maybe_idle()` 把整个补歌流程包在锁里，而里头会
+`registry.resolve()` 联网、失败还重试 `IDLE_RETRIES = 8` 次 ——
+于是 `POST /api/skip` 最坏要等 8 × 15 秒，主播点「下一首」就卡住。
+这也违反 `docs/architecture.md` 的铁律「持锁时不联网」。
+
+现在的顺序是：
+
+```python
+if not self._idle_lock.acquire(blocking=False):
+    return                      # 已经有人在补了
+self._idle_lock.release()       # ★ 令牌到手就把锁放掉
+
+item = self._pick_idle_item(picks)      # 联网，此时没有任何 idle 锁
+with self.queue.resolving():
+    self.queue.start_now(item)          # 提交，很快，不碰网络
+```
+
+`tests/test_regressions.py::TestIdleDoesNotHoldLockWhileNetworking`
+用探针 registry 钉住这条：解析期间只要 `_idle_lock` 还被占着就红。
+（第一版改法是「抢锁 → 联网 → finally 释放」，测试当场抓出来
+联网时锁仍被持有 —— 锁的释放必须发生在联网**之前**。）
 
 ---
 

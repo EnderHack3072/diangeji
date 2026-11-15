@@ -390,3 +390,54 @@ class TestCli:
         from diangeji.__main__ import parse_args
         with pytest.raises(SystemExit):
             parse_args(["--nope"])
+
+
+class TestLogFileFollowsDataDir:
+    """``--data-dir`` 必须同时决定日志位置。
+
+    原来 ``build_application()` 调的是无参 ``setup_logging()``，日志路径
+    永远取默认的 ``data_dir()`` —— 传了 ``--data-dir D:\\foo`` 之后，
+    配置和曲库进了新目录，日志却还写在程序旁边，按文档去找必然扑空。
+    """
+
+    def test_log_written_into_given_data_dir(self, tmp_path):
+        from diangeji.app import build_application
+        target = tmp_path / "custom"
+        build_application(data_directory=target, port=0, with_logging=True)
+        log_file = target / "logs" / "diangeji.log"
+        assert log_file.is_file(), f"日志没写进指定目录：{log_file}"
+        # 组装阶段不保证已有内容（真正写日志发生在 start 之后），
+        # 文件被创建即证明 handler 指对了地方。
+        assert log_file.parent == target / "logs"
+
+    def test_default_log_path_untouched(self, tmp_path):
+        """指定目录时不能顺手在默认目录里也建一份。"""
+        from diangeji import paths
+        from diangeji.app import build_application
+        default_log = paths.data_dir() / "logs" / "diangeji.log"
+        before = default_log.stat().st_mtime if default_log.exists() else None
+        build_application(data_directory=tmp_path / "other", port=0,
+                          with_logging=True)
+        after = default_log.stat().st_mtime if default_log.exists() else None
+        assert before == after, "指定 --data-dir 时默认目录的日志被动了"
+
+
+class TestDataDirPriority:
+    """``--data-dir`` > ``DIANGE_DATA`` > 默认。文档就是这么写的。"""
+
+    def test_cli_overrides_env(self, tmp_path, monkeypatch):
+        from diangeji.app import build_application
+        monkeypatch.setenv("DIANGE_DATA", str(tmp_path / "fromenv"))
+        cli = tmp_path / "fromcli"
+        app = build_application(data_directory=cli, port=0, with_logging=False)
+        assert app.data_dir == cli.resolve()
+
+    def test_env_used_when_no_cli(self, tmp_path, monkeypatch):
+        from diangeji import paths
+        monkeypatch.setenv("DIANGE_DATA", str(tmp_path / "fromenv"))
+        assert paths.data_dir() == (tmp_path / "fromenv").resolve()
+
+    def test_default_when_neither(self, tmp_path, monkeypatch):
+        from diangeji import paths
+        monkeypatch.delenv("DIANGE_DATA", raising=False)
+        assert paths.data_dir().name == paths.DATA_DIR_NAME

@@ -11,7 +11,7 @@
     CHANGELOG.md          变更记录（编号条目，最新在最后）
     docs/architecture.md  分层规则、线程模型、数据流、新增功能该放哪
     scripts/build.py      打包脚本（PyInstaller，自动带上模板和图片）
-    tests/                377 项 pytest 测试
+    tests/                382 项 pytest 测试
 
   src/diangeji/
     __main__.py           命令行入口（--headless / --port / --room 等）

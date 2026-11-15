@@ -505,3 +505,56 @@ except Exception as exc:
 - 模板里引用的每个 `/asset/xxx` 都必须能在图片目录里找到（破图检查）
 
 测试 373 → **377** 项。
+
+## 49 — `--data-dir` 没有管住日志路径
+
+装完 wheel 做真实启动验证时发现的：`--data-dir <临时目录>` 启动后，
+那个目录里**一个文件都没有**，日志还写在程序旁边默认的
+`点歌姬数据/logs/diangeji.log`。
+
+原因在 `build_application()`：
+
+```python
+data = Path(data_directory or data_dir())
+if with_logging:
+    setup_logging()          # ← 无参，内部又去问默认 data_dir()
+```
+
+配置、曲库、cookie 都跟着 `data` 走了，只有日志路径是函数内部
+重新解析的默认值。按文档去新目录找日志必然扑空 —— 自动化脚本里
+尤其难查，因为服务看起来一切正常。
+
+改成显式传路径：
+
+```python
+setup_logging(log_file=data / "logs" / "diangeji.log")
+```
+
+实测：`--data-dir <临时目录>` 启动一次后，目录里出现
+`logs\diangeji.log`（730 B）。顺带把 `docs/modules/services.md`
+里已经改名的 `_idle_once` 换成 `_pick_idle_item`，并补上
+「锁只表示这一轮谁负责」的说明。
+
+新增 2 项测试：日志必须落进指定目录、且不能顺手碰默认目录那份。
+测试 377 → **379** 项。
+
+## 50 — 订正数据目录优先级：`--data-dir` 高于 `DIANGE_DATA`
+
+README 原话是「用环境变量 `DIANGE_DATA` 改位置……优先级最高」。**不准确。**
+
+实测（`paths.data_dir()` 只认环境变量，而 `build_application()` 拿到的
+`data_directory` 参数直接覆盖它）：
+
+```
+仅 DIANGE_DATA  -> ...\fromenv
+两者都给        -> ...\fromcli        ← 命令行赢
+```
+
+正确顺序是 `--data-dir` > `DIANGE_DATA` > 默认目录。用户按 README
+以为设了环境变量就能压住命令行，实际相反，排查时会走弯路。
+
+README 改成显式列三层优先级，并把「日志跟着一起搬」写明；
+`docs/modules/infra.md` 补上「`log_file` 一定要显式传」的原因。
+
+新增 3 项测试把优先级钉死：命令行压环境变量、无命令行时用环境变量、
+两者都没有时回默认目录。测试 379 → **382** 项。

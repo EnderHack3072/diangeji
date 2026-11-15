@@ -211,7 +211,11 @@ def build_application(data_directory: Path | None = None,
     data.mkdir(parents=True, exist_ok=True)
 
     if with_logging:
-        setup_logging()
+        # 日志必须跟着数据目录走。原来是无参 setup_logging()，路径永远取
+        # 默认的 data_dir() —— 于是 `--data-dir D:\foo` 只改了配置和曲库，
+        # 日志还是写到程序目录旁边那份 `点歌姬数据/`，用户按文档去新目录
+        # 里找日志会扑空（自动化脚本里尤其难查）。
+        setup_logging(log_file=data / "logs" / "diangeji.log")
 
     cfg = (config or Config.load(data / "config.json")).normalized()
 

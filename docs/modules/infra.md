@@ -129,8 +129,13 @@ get_logger(name="") -> logging.Logger
   `reconfigure(encoding="utf-8", errors="replace")`，流不支持就原样返回。
 
 ```python
-# 典型用法
-setup(log_file=data_dir() / "logs" / "diangeji.log")
+# 典型用法 —— 由 build_application() 调用，路径跟着「当前数据目录」走
+setup(log_file=data / "logs" / "diangeji.log")
 log = get_logger(__name__)
 log.info("HTTP 服务已启动：%s", url)
 ```
+
+> **`log_file` 一定要显式传。** `setup()` 不给路径时不会写文件；
+> 而 `build_application()` 早先就是无参调用，日志于是永远落在默认
+> `data_dir()` 里 —— `--data-dir D:\foo` 只搬走了配置和曲库，
+> 用户去新目录找日志会扑空（CHANGELOG 49）。
