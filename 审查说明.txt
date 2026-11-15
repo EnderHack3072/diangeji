@@ -1,0 +1,134 @@
+点歌姬 v1.1 —— 源码审查包
+
+目录说明
+
+  这是重构后的 src-layout 结构。全部业务代码收进 src/diangeji/，按职责分包：
+
+  根目录
+    run.py                启动器（把 src/ 加进 sys.path，可直接 python run.py）
+    pyproject.toml        打包配置（setuptools + src-layout）
+    README.md             使用说明
+    CHANGELOG.md          变更记录（编号条目，最新在最后）
+    docs/architecture.md  分层规则、线程模型、数据流、新增功能该放哪
+    scripts/build.py      打包脚本（PyInstaller，自动带上模板和图片）
+    tests/                303 项 pytest 测试
+
+  src/diangeji/
+    __main__.py           命令行入口（--headless / --port / --room 等）
+    app.py                组合根：唯一知道各层怎么装配的地方
+    paths.py              所有路径的唯一出口
+    constants.py          常量（端口、触发词、UA、扩展名表…）
+    config.py             配置读写（临时文件 + 原子替换）
+    logging_setup.py      日志（2MB 轮转，留 3 份）
+
+    core/                 领域层：模型与状态机，不依赖任何上层
+      models.py             Track / QueueItem / TrackSource
+      queue.py              PlayQueue 状态机（playing / queue / history）
+      library.py            LocalLibrary 曲库扫描与匹配
+      errors.py             异常类型
+
+    sources/              领域层：音源适配
+      base.py               MusicSource 协议 + ResolveResult
+      local_source.py       本地曲库
+      qqmusic.py            QQ 音乐（搜索 + vkey 直链 + 收藏）
+      registry.py           按优先级调度，跳过不可用音源
+
+    live/                 领域层：B 站直播
+      protocol.py           弹幕包格式（16 字节头 + zlib/brotli 嵌套）
+      wbi.py                WBI 签名
+      commands.py           弹幕文本 → 点歌指令
+      client.py             WebSocket 客户端（重连、心跳、去重）
+
+    auth/                 领域层：登录
+      store.py              cookie 原子存取
+      qrcode_login.py       扫码登录（B 站 / QQ 音乐）
+      browser.py            浏览器登录（CDP 取 cookie）
+
+    services/             用例层：编排
+      playback.py           点歌 / 切歌 / 空闲随机
+      library_service.py    曲库扫描
+
+    web/                  表现层：本地 HTTP
+      routes.py             路由与处理器
+      security.py           同源校验（默认拒绝）
+      views.py              模板渲染与 <script> 转义
+      server.py             HttpService 生命周期
+      templates/            index.html / overlay.html
+      static/img/           bg.png / hero.png / hero_web.png / icon.ico
+      static/img/buttons/   btn_*.png（24 张）
+
+    ui/                   表现层：Tkinter
+      main_window.py        主窗口 + 扫码登录窗口
+      widgets.py            自绘控件（Canvas 圆角、贴图按钮、音量滑块）
+
+    utils/                工具层：无业务含义
+      ws.py                 WebSocket（帧长上限、非递归 ping）
+      webhttp.py            HTTP + JSON（含 GBK 兜底）
+      text.py               字符串处理
+      timeutil.py           时间格式
+
+  依赖严格单向：ui/web → services → core/sources/live → utils。
+  没有任何模块 import ui；也没有模块 import app（组合根由 __main__ 传进去）。
+  app.py 是唯一的例外 —— 它就是来装配的，所以它谁都碰。
+
+分层约定
+  详见 docs/architecture.md。一句话：ui/web 只翻译用户操作，services 只排顺序，
+  core/sources/live 只管自己的领域，utils 只管通用机制。
+
+  这些规则不是靠自觉：tests/test_layering.py 用 AST 扫描源码，每次跑 pytest
+  都会检查一遍，新增一层必须同时在 ALLOWED 表里登记，否则直接红。
+
+怎么跑（Windows，需 Python 3.10+）
+  python run.py
+  或  pip install -e .  &&  diangeji
+
+  只依赖标准库；qrcode/pypng（仅扫码）和 brotli（B站 protover 3）是可选依赖，
+  缺了也能跑，只是对应功能不可用。
+
+数据目录
+  默认 <程序目录>\点歌姬数据\，里面 config.json、cookie 文件、日志都是运行时生成，
+  本包不含任何账号数据。可用环境变量 DIANGE_DATA 改位置。
+
+打包
+  python scripts/build.py
+  （脚本会自动带上 web/templates 和 web/static/img，否则 exe 打开是白屏）
+
+想重点看的地方
+
+  1. web/security.py 的 is_local_request()：默认拒绝。Host 必须是回环（挡 DNS
+     rebinding），有 Origin/Referer 时也必须回环，两个都没有则拒绝，除非显式传
+     allow_headless=True。原版是「两个都没有就放行」，等于对本机任意进程全开。
+
+  2. web/views.py 的 render_state_script()：注入 <script> 前转义 </、U+2028/2029、
+     <!-- 三种情况，防弹幕内容 XSS 与语法错误。
+
+  3. live/protocol.py 的 iter_packets()：total < 16 或越界立刻停，否则游标会原地
+     打转或解释垃圾数据。tests/test_live.py 有对应的边界测试。
+
+  4. services/playback.py 的 skip_if_finished()：修掉了「一首歌跳两首」。
+     主播台（静音）和 OBS 层是两个页面，都监听 <audio> 的 ended。现在前端上报
+     带曲目 id，服务端只认当前播放项，迟到的上报被丢弃。
+
+     配套地，前端 syncAudio() 也改成按 id 而不是 path 判断「换歌了」—— 同一个人
+     连点两次同一首本地歌时，前后两首 path 完全相同，按 path 判断会导致第二首的
+     ended 被丢弃，播放器停住不动。test_regressions.py 有对应守卫。
+
+  5. core/queue.py 的 advance(refresh=...)：锁内搬状态 → 锁外刷直链 → 锁内提交。
+     原版 freshen() 在锁内联网，会卡住整个服务。锁外期间若有新点歌抢到播放位，
+     候选曲目塞回队首。
+
+  6. auth/store.py 的 CookieStore.write()：归一化 → 临时文件 → os.replace，
+     空内容直接拒绝。原版 f.write(ck) 里 ck 是 dict，open(...,"w") 先截断文件
+     再抛 TypeError，把能用的 qq_cookie.txt 变成 0 字节。
+
+  7. app.py 的 _handle_order()：只投递不解析。解析一首歌要走 QQ 音乐搜索 +
+     取 vkey 直链（最坏 24 秒），而弹幕心跳窗口只有 25 秒 —— 在收包线程里同步
+     跑，一次慢查询就能把长连接拖到超时重连。改成 queue 投递 + 单 worker 顺序消费。
+
+  8. 界面线程不做网络：ui/main_window.py 的 _guard_async() 把「下一首 / 上一首」
+     丢后台线程，扫码窗口的 client.start() 同理。原版这些全在 Tk 回调里同步跑。
+
+  9. tests/test_layering.py + tests/test_regressions.py：这两个文件不测功能，
+     测的是「架构没被破坏」和「修过的 bug 没复活」。
+
+  10. public API 都在各包的 __init__.py 里，看导出就知道这个包对外承诺了什么。

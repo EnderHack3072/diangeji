@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "diangeji"
+version = "1.1.0"
+description = "点歌姬 · B 站直播间弹幕点歌机（Tkinter 主播端 + 本地 HTTP 服务 + OBS 覆盖层）"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Proprietary" }
+authors = [{ name = "点歌姬" }]
+keywords = ["bilibili", "danmaku", "obs", "music", "tkinter"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Operating System :: Microsoft :: Windows",
+    "Topic :: Multimedia :: Sound/Audio",
+]
+# 运行时只依赖标准库；扫码登录需要 qrcode/pypng，protover 3 解包需要 brotli。
+dependencies = []
+
+[project.optional-dependencies]
+qr = ["qrcode>=7.4", "pypng>=0.20220715"]
+brotli = ["brotli>=1.0"]
+full = ["qrcode>=7.4", "pypng>=0.20220715", "brotli>=1.0"]
+dev = ["pytest>=7.4", "build>=1.0", "pyinstaller>=6.0"]
+
+[project.scripts]
+diangeji = "diangeji.__main__:main"
+
+[project.gui-scripts]
+diangeji-gui = "diangeji.__main__:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+include-package-data = true
+zip-safe = false
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["diangeji*"]
+
+[tool.setuptools.package-data]
+diangeji = [
+    "web/templates/*.html",
+    "web/static/img/*.png",
+    "web/static/img/*.ico",
+    "web/static/img/buttons/*.png",
+    "py.typed",
+]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"
+filterwarnings = ["error::DeprecationWarning:diangeji.*"]

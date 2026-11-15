@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>点歌姬 · 正在播放 __VERSION__</title>
+<style>
+  html,body{margin:0;height:100%;background:transparent;overflow:hidden;
+            font-family:"Microsoft YaHei","PingFang SC",system-ui,sans-serif}
+  /* 固定尺寸面板：不管歌名多长，框大小不变 */
+  .wrap{position:absolute;left:36px;bottom:36px;
+        width:600px;height:92px;box-sizing:border-box;
+        background:rgba(23,18,31,.78);backdrop-filter:blur(6px);
+        border:1px solid rgba(181,140,255,.35);border-radius:16px;
+        padding:0 20px;color:#ece7f7;display:flex;gap:14px;align-items:center;
+        box-shadow:0 12px 36px rgba(0,0,0,.35);overflow:hidden}
+  .wave{display:flex;gap:3px;align-items:flex-end;height:26px;flex:0 0 auto}
+  .wave i{width:3px;background:linear-gradient(180deg,#ff9ec7,#b58cff);border-radius:2px;
+          animation:bounce 1s infinite ease-in-out}
+  .wave i:nth-child(2){animation-delay:.15s}.wave i:nth-child(3){animation-delay:.3s}
+  .wave i:nth-child(4){animation-delay:.45s}.wave i:nth-child(5){animation-delay:.6s}
+  .wave.paused i{animation-play-state:paused;height:6px}
+  @keyframes bounce{0%,100%{height:6px}50%{height:24px}}
+  .body{flex:1 1 auto;min-width:0;overflow:hidden}
+  .view{overflow:hidden;white-space:nowrap;width:100%}
+  .track{display:inline-block;white-space:nowrap;
+         font-size:24px;font-weight:700;letter-spacing:.5px;
+         text-shadow:0 2px 10px rgba(0,0,0,.5)}
+  .track.scroll{animation:marquee var(--dur,8s) linear infinite alternate}
+  @keyframes marquee{from{transform:translateX(0)}
+                     to{transform:translateX(calc(-1 * var(--shift,0px)))}}
+  .m{font-size:13px;color:#b9aecf;margin-top:3px;white-space:nowrap;
+     overflow:hidden;text-overflow:ellipsis}
+  .m b{color:#ff9ec7;font-weight:600}
+  .next{flex:0 0 150px;font-size:12px;color:#8d82a6;line-height:1.35;
+        border-left:1px solid rgba(181,140,255,.3);padding-left:14px;
+        overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .next.empty{border-left:none;padding-left:0}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="wave" id="wave"><i></i><i></i><i></i><i></i><i></i></div>
+  <div class="body">
+    <div class="view"><span class="track" id="track">等待点歌</span></div>
+    <div class="m" id="meta">发「点歌 歌名」</div>
+  </div>
+  <div class="next empty" id="next"></div>
+</div>
+<audio id="au" preload="auto" crossorigin="use-credentials"></audio>
+<script>
+let curText = null, curId = null, endedSent = false;
+const track = document.getElementById('track');
+const view = track.parentNode;
+const au = document.getElementById('au');
+const wave = document.getElementById('wave');
+function esc(s){return (s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+
+/* 只有超出宽度才滚动，且速度恒定（60px/秒，最短 6 秒） */
+function layout(){
+  track.classList.remove('scroll');
+  track.style.removeProperty('--shift');
+  const shift = track.scrollWidth - view.clientWidth;
+  if (shift > 4){
+    track.style.setProperty('--shift', shift + 'px');
+    track.style.setProperty('--dur', Math.max(6, shift / 60) + 's');
+    void track.offsetWidth;
+    track.classList.add('scroll');
+  }
+}
+window.addEventListener('resize', layout);
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(layout);
+
+/* 唱完 → 带 id 上报；服务端只认当前播放项。
+   主播台那页是静音的，但静音音频一样会 ended —— 靠 id 去重，
+   后到的那次上报会因为 id 已经变了而被服务端丢弃。 */
+au.addEventListener('ended', ()=>{
+  if (!curId || endedSent) return;
+  endedSent = true;
+  fetch('/api/ended', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({id: curId})}).catch(()=>{});
+});
+
+async function tick(){
+  try{
+    const s = await (await fetch('/api/state', {cache:'no-store'})).json();
+    const np = s.playing;
+    const text = np ? (np.title || '') : '等待点歌';
+    if (text !== curText){ curText = text; track.textContent = text; layout(); }
+    document.getElementById('meta').innerHTML = np
+      ? `<b>${esc(np.user)}</b> 点播${np.path?'':' · <span style="color:#ffcf7a">缺音源</span>'}`
+      : '发「点歌 歌名」';
+    const q = s.queue || [];
+    const nEl = document.getElementById('next');
+    if (q.length){
+      nEl.classList.remove('empty');
+      nEl.innerHTML = '下一首 · ' + esc(q[0].title) + (q.length>1 ? ` <span style="opacity:.6">等 ${q.length} 首</span>` : '');
+    } else {
+      nEl.classList.add('empty');
+      nEl.textContent = '';
+    }
+    wave.classList.toggle('paused', !!s.paused);
+    au.volume = Math.max(0, Math.min(1, (s.volume ?? 20) / 100));
+    if (s.paused) { au.pause(); } else if (au.src && au.paused) { au.play().catch(()=>{}); }
+
+    // 用 id 而不是 path 判断「换歌了」：连点两次同一首本地歌 path 相同，
+    // 按 path 判断会漏掉第二首，播放器卡在结尾不动。
+    const wantId = np && np.id ? np.id : null;
+    if (np && np.path && wantId !== curId){
+      curId = wantId;
+      endedSent = false;
+      const src = /^https?:/i.test(np.path) ? np.path
+                : ('/media/' + encodeURI(np.path.replace(/\\/g,'/')));
+      au.src = src;
+      au.play().catch(()=>{});
+    } else if (!np && curId){
+      curId = null; endedSent = false;
+      au.pause(); au.removeAttribute('src');
+    }
+  }catch(e){
+    try { au.pause(); } catch(_){}
+    curId = null;
+  }
+}
+tick(); layout(); setInterval(tick, 3000);
+</script>
+</body>
+</html>
