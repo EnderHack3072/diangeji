@@ -20,7 +20,7 @@ from typing import Any, Callable, Iterator
 from ..constants import HISTORY_KEEP, LOG_KEEP
 from ..logging_setup import get_logger
 from ..utils.timeutil import now_ts
-from .models import QueueItem, TrackSource
+from .models import QueueItem
 
 log = get_logger(__name__)
 
@@ -62,20 +62,37 @@ class PlayQueue:
         with self._lock:
             return [dict(e) for e in self._log]
 
-    def snapshot(self) -> dict[str, Any]:
-        """给前端 / 界面的只读快照（JSON 可序列化）。"""
+    def snapshot(self, *, include_log: bool = True,
+                 limit: int | None = None) -> dict[str, Any]:
+        """给前端 / 界面的只读快照（JSON 可序列化）。
+
+        所有这些 ``to_dict()`` 都在 ``_lock`` **里面**做，而 ``push()`` /
+        ``advance()`` 抢的是同一把锁 —— 所以前端轮询越勤、队列越长，
+        点歌入队就被挡得越久。热门直播间队列几百条时这不是空谈。
+
+        参数就是给轮询路径用的：
+
+        * ``include_log=False`` —— 日志只有界面那个日志框要，``/api/state``
+          每 2 秒拉一次没必要带上最近 40 条。
+        * ``limit=N`` —— 只回队列前 N 条。前端本来就只渲染前几十条。
+
+        默认值保持「全都要」，所以老的调用点行为不变。
+        """
         with self._lock:
-            return {
-                "queue": [item.to_dict() for item in self._queue],
+            queue = self._queue if limit is None else self._queue[:max(0, limit)]
+            payload: dict[str, Any] = {
+                "queue": [item.to_dict() for item in queue],
                 "playing": self._playing.to_dict() if self._playing else None,
                 "history": [item.to_dict() for item in self._history],
-                "log": [dict(e) for e in self._log],
                 "paused": self.paused,
                 "volume": self.volume,
                 "idle": self.idle,
                 "idle_last": self.idle_last,
                 "pending": self.pending,
             }
+            if include_log:
+                payload["log"] = [dict(e) for e in self._log]
+            return payload
 
     def needs_idle(self) -> bool:
         """是否需要补一首空闲随机。"""

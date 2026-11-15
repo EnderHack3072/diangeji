@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from ..core.errors import LibraryUnavailableError
 from ..logging_setup import get_logger
 
 log = get_logger(__name__)
@@ -36,7 +37,17 @@ def render_state_script(state: Any) -> str:
 
 
 def _read(template_dir: Path, name: str) -> str:
-    return (Path(template_dir) / name).read_text(encoding="utf-8")
+    """读模板。找不到就抛领域异常，别让 OSError 一路冒到 HTTP 层。
+
+    原来的 ``read_text()`` 裸抛 ``FileNotFoundError``，最后由
+    ``routes`` 的兜底 ``str(exc)`` 直接塞进 500 响应体 —— 服务端的绝对
+    路径就这么交给任意请求方了。
+    """
+    try:
+        return (Path(template_dir) / name).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise LibraryUnavailableError(
+            f"模板缺失或不可读：{name}（请检查安装是否完整）") from exc
 
 
 def render_console(template_dir: Path, state: Any, lib_count: int, version: str) -> str:

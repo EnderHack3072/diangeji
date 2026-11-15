@@ -16,8 +16,8 @@ import subprocess
 import threading
 import time
 import tkinter as tk
+import tkinter.font as tkfont
 import webbrowser
-from pathlib import Path
 from tkinter import messagebox
 from typing import TYPE_CHECKING
 
@@ -25,11 +25,9 @@ from .. import __version__
 from ..auth.browser import find_edge
 from ..auth.qrcode_login import BiliQRLogin, LoginResult, QQMusicQRLogin, QRPayload
 from ..auth.store import BILI_COOKIE, QQ_COOKIE
-from ..config import Config
-from ..constants import APP_NAME, CDP_PORT_QQ, DEFAULT_PORT
+from ..constants import APP_NAME, CDP_PORT_QQ
 from ..logging_setup import get_logger
 from ..paths import button_image_dir, image_dir
-from ..paths import data_dir as default_data_dir
 from .widgets import CButton, CLabel, CSlider, round_rect
 
 if TYPE_CHECKING:  # 只为类型标注；运行时不 import 组合根，避免反向依赖
@@ -83,7 +81,11 @@ class QRLoginDialog:
         try:
             payload: QRPayload = self.client.start()  # type: ignore[attr-defined]
         except Exception as exc:
-            self._call_ui(lambda: self._fail(f"取二维码失败：{exc}"))
+            # ⚠️ 必须先把文本取出来再进 lambda。Python 在 except 块结束时
+            # 会 ``del exc``，而 lambda 是延迟执行的 —— 直接写 ``{exc}``
+            # 会让回调在 NameError 里炸掉（二维码永远出不来）。
+            message = f"取二维码失败：{exc}"
+            self._call_ui(lambda: self._fail(message))
             return
         self._call_ui(lambda: self._show_qr(payload, title))
 
@@ -200,7 +202,6 @@ class AppWindow:
         self._closed = False
         self._closing = False    # 退出流程已启动（防重复点「退出」）
         self._busy = False       # 后台动作（切歌等）进行中，防止重复点击
-        import tkinter.font as tkfont
         self._font = tkfont.Font(family="Microsoft YaHei", size=11, weight="bold")
         self._build()
         self.refresh_labels()
@@ -208,7 +209,6 @@ class AppWindow:
     # ---------------- 布局 ----------------
 
     def _build(self) -> None:
-        import tkinter.font as tkfont
 
         cv = tk.Canvas(self.root, width=CANVAS_W, height=CANVAS_H,
                        highlightthickness=0, bd=0)
@@ -410,7 +410,11 @@ class AppWindow:
                 fn()
                 self.root.after(0, lambda: self.log(name + " 完成"))
             except Exception as exc:
-                self.root.after(0, lambda: self.log(f"{name} 失败：{exc}"))
+                # 同上：except 结束会 del exc，必须先取出文本。
+                # 这里更严重 —— 原来失败时连「失败」都显示不出来，
+                # 按钮还会因为 done() 前面的异常而不复原。
+                message = f"{name} 失败：{exc}"
+                self.root.after(0, lambda: self.log(message))
             finally:
                 def done() -> None:
                     self._busy = False
@@ -680,6 +684,13 @@ def launch(app, *, args=None) -> int:
     root.configure(bg="#f6efff")
     root.geometry(f"{WINDOW_W}x{WINDOW_H}")
     root.resizable(False, False)
+    # 窗口图标：``icon.ico`` 一直打在包里却从没人用过，任务栏显示的是
+    # Tk 默认的羽毛。只在 launch() 里设一次，失败就跳过 ——
+    # 图标缺失或平台不支持都不该把启动带崩。
+    try:
+        root.iconbitmap(str(image_dir() / "icon.ico"))
+    except Exception:      # noqa: BLE001
+        pass
 
     def attach() -> None:
         window = AppWindow(root, app)
@@ -691,9 +702,3 @@ def launch(app, *, args=None) -> int:
     root.after(0, attach)
     root.mainloop()
     return 0
-
-
-def _load_config(data_directory):
-    """界面启动时读一次配置（路径与 ``build_application`` 保持一致）。"""
-    directory = data_directory or default_data_dir()
-    return Config.load(Path(directory) / "config.json")

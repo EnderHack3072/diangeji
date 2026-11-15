@@ -1,6 +1,6 @@
 """日志：控制台 + 滚动文件（``点歌姬数据/logs/diangeji.log``）。
 
-Tkinter 界面里的日志框是**另一个**通道（``ui/app.py`` 直接往 Text 里写），
+Tkinter 界面里的日志框是**另一个**通道（``ui/main_window.py`` 的 ``log()`` 直接往 Text 里写），
 这里给的是排障用的落盘日志。
 """
 

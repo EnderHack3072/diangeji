@@ -5,8 +5,15 @@ from __future__ import annotations
 import re
 import unicodedata
 
-#: 点歌触发词（与 constants.ORDER_PREFIXES 保持一致；此处内置一份避免循环导入）
-_PREFIX_RE = re.compile(r"^(?:点歌|点播|来一首|想听)\s*[:：,，、]?\s*(.+)$")
+#: 点歌触发词正则。
+#:
+#: ⚠️ 这份字面量**故意**不从 ``constants.ORDER_PREFIXES`` 生成 —— ``utils``
+#: 层不允许依赖任何业务/基础设施模块（``tests/test_layering.py`` 会拦），
+#: 所以这里只能独立一份。代价是**两处必须一起改**：改触发词要同时动
+#: ``constants.ORDER_PREFIXES`` 和这里的正则，``test_infra.py`` 有一条测试
+#: 比对两者是否一致，改漏了会红。
+_PREFIX_RE = re.compile(
+    r"^(?:点歌|点播|来一首|想听)\s*[:：,，、]?\s*(.+)$")
 
 #: Windows 文件名非法字符
 _BAD_FILENAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')

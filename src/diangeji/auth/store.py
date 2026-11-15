@@ -12,13 +12,12 @@
 
 from __future__ import annotations
 
-import os
 import re
 from pathlib import Path
-from typing import Iterable, Mapping
+from typing import Mapping
 
 from ..logging_setup import get_logger
-from ..paths import atomic_write, data_dir, ensure_dir
+from ..paths import atomic_write, data_dir
 
 log = get_logger(__name__)
 

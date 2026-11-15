@@ -204,9 +204,23 @@ ctx.danmaku_state = app.danmaku_state   # 打破 http → app 的反向依赖
 一次慢查询就能把长连接拖到超时重连 —— 直播间人多时还会串行排队。
 `_handle_order()` 只投递，`order-worker` 单线程顺序消费，保证入队顺序正确。
 
-**锁只有一把**：`PlayQueue._lock`，保护 `playing / queue / history`。
+**保护队列状态的是 `PlayQueue._lock`**，管 `playing / queue / history`。
+另有两把**不保护业务状态**的辅助锁，别混为一谈：
+
+| 锁 | 保护什么 | 允许持锁联网吗 |
+|---|---|---|
+| `PlayQueue._lock` | 队列状态本体 | **不行** |
+| `PlaybackService._idle_lock` | 只表示「这一轮由我负责补歌」 | **不行**（抢到就立刻放） |
+| `QQMusicSource._lock` | 直链/歌单缓存字典 | 不行 |
 
 **铁律：持锁时不联网、不碰 Tk、不写文件。**
+
+`_idle_lock` 曾经是反例：它把整个补歌流程（含 `registry.resolve()`
+联网、失败重试 8 次）包在锁里，于是主播点「下一首」最坏要等
+8 × 15 秒。现在它只在**抢令牌**那一刻被持有，抢到就释放 ——
+它表达的是「谁去补这一首」，不是「我要一直占着直到联网完」。
+（`tests/test_regressions.py::TestIdleDoesNotHoldLockWhileNetworking`
+盯着这条。）
 
 `PlayQueue.advance(refresh=...)` 就是为这条规则设计的：
 

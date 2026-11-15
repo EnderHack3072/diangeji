@@ -11,6 +11,7 @@ import threading
 import time
 from typing import Callable, Iterable
 
+from ..core.errors import EmptyKeywordError
 from ..core.models import QueueItem, Track, TrackSource
 from ..core.queue import PlayQueue
 from ..logging_setup import get_logger
@@ -45,7 +46,7 @@ class PlaybackService:
         """
         key = (keyword or "").strip()
         if not key:
-            raise ValueError("空的点歌关键词")
+            raise EmptyKeywordError("空的点歌关键词")
 
         with self.queue.resolving():
             result = self.registry.resolve(key)
@@ -120,20 +121,35 @@ class PlaybackService:
         return picks
 
     def _maybe_idle(self) -> None:
-        """队列空了且开了空闲随机 → 补一首。"""
+        """队列空了且开了空闲随机 → 补一首。
+
+        **``_idle_lock`` 只保护「谁去补这一首」这个决定，不保护网络请求。**
+        原实现把整个 ``_idle_once()`` 包在锁里，而它会 ``registry.resolve()``
+        联网、失败还重试 ``IDLE_RETRIES=8`` 次 —— 于是
+        ``POST /api/skip`` 最坏要等 8 × 15 秒才返回，主播点「下一首」就卡住。
+        它同时也违反 ``docs/architecture.md`` 的铁律「持锁时不联网」。
+
+        现在的顺序：抢令牌 → 立刻放锁 → 联网挑歌 → 提交。
+        """
         if not self.queue.needs_idle() or self.queue.is_resolving():
             return
         if not self._idle_lock.acquire(blocking=False):
-            return
-        try:
-            self._idle_once()
-        finally:
-            self._idle_lock.release()
+            return          # 已经有人在补了
+        # ★ 令牌拿到就把锁放掉 —— 它只表示「这一轮由我负责」，
+        #   不表示「我要一直占着直到联网完」。继续持有就是原 bug。
+        self._idle_lock.release()
 
-    def _idle_once(self) -> None:
         picks = self._pool()
         if not picks:
             return
+        item = self._pick_idle_item(picks)      # 联网，此时没有任何 idle 锁
+        if item is None:
+            return
+        with self.queue.resolving():
+            self.queue.start_now(item)
+
+    def _pick_idle_item(self, picks: list[tuple[str, str | None]]) -> QueueItem | None:
+        """在锁外挑一首拿得到直链的歌。这里会联网，调用方必须已经放锁。"""
         last = self.queue.idle_last
         for _ in range(IDLE_RETRIES):
             name, mid = self._rng.choice(picks)
@@ -141,8 +157,8 @@ class PlaybackService:
                 continue
             item = self._build_idle_item(name, mid)
             if item is not None:
-                self.queue.start_now(item)
-                return
+                return item
+        return None
 
     def _build_idle_item(self, name: str, mid: str | None) -> QueueItem | None:
         """把候选歌变成可播条目；拿不到直链就放弃这一首。"""
@@ -174,5 +190,7 @@ class PlaybackService:
     def clear(self) -> dict:
         return self.queue.clear()
 
-    def snapshot(self) -> dict:
-        return self.queue.snapshot()
+    def snapshot(self, *, include_log: bool = True,
+                 limit: int | None = None) -> dict:
+        """透传给 ``queue.snapshot()`` —— 轮询路径可以要轻量版。"""
+        return self.queue.snapshot(include_log=include_log, limit=limit)

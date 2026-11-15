@@ -234,3 +234,40 @@ class TestCommands:
         order = parse_order("点歌 晴天")
         assert isinstance(order, Order)
         assert order.keyword == "晴天"
+
+
+class TestLazyPackageImports:
+    """``import diangeji.live`` 不该连带加载整个 client 链。
+
+    ``live/client.py`` 里写的是 ``from . import protocol``，如果 ``__init__``
+    又 eager import client，图上就是 ``live → live.client → live`` 的环。
+    工程上不炸，但任何只想用 ``parse_order`` 的调用方都要白付
+    client + utils.ws + utils.webhttp + paths 的导入开销。
+    """
+
+    def test_importing_live_does_not_pull_client(self):
+        import os
+        import subprocess
+        import sys
+        from pathlib import Path
+        src = str(Path(__file__).resolve().parents[1] / "src")
+        env = dict(os.environ, PYTHONPATH=src)
+        code = ("import sys, diangeji.live; "
+                "print('diangeji.live.client' in sys.modules)")
+        out = subprocess.run([sys.executable, "-c", code],
+                             capture_output=True, text=True, env=env)
+        assert out.returncode == 0, out.stderr
+        assert out.stdout.strip() == "False", \
+            "import diangeji.live 把 client 也拉起来了，惰性导入失效"
+
+    def test_old_import_style_still_works(self):
+        """兼容性：``from diangeji.live import DanmakuClient`` 不能坏。"""
+        from diangeji.live import DanmakuClient, DanmakuState, WBISigner
+        assert DanmakuClient.__name__ == "DanmakuClient"
+        assert DanmakuState.__name__ == "DanmakuState"
+        assert WBISigner.__name__ == "WBISigner"
+
+    def test_unknown_attribute_raises(self):
+        import diangeji.live
+        with pytest.raises(AttributeError):
+            diangeji.live.NoSuchAttribute

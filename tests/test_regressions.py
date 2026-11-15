@@ -18,6 +18,9 @@ from diangeji import paths
 from diangeji.app import build_application
 from diangeji.core.models import QueueItem
 from diangeji.core.queue import PlayQueue
+from diangeji.services.playback import PlaybackService
+from diangeji.sources.base import ResolveResult
+from diangeji.core.models import Track, TrackSource
 from diangeji.utils.ws import WSClient, WebSocketError
 
 
@@ -410,3 +413,152 @@ class TestDocsExist:
         assert links, "索引里没有任何模块链接"
         for link in links:
             assert (index.parent / link).is_file(), f"索引指向了不存在的 {link}"
+
+
+class _SlowRegistry:
+    """每次 resolve 都假装联网，并在解析期间检查一把锁有没有被占着。"""
+
+    def __init__(self, probe, delay=0.05):
+        self._probe = probe
+        self._delay = delay
+        self.saw_locked = False
+
+    def resolve(self, keyword):
+        import time
+        if self._probe():
+            self.saw_locked = True
+        time.sleep(self._delay)
+        return ResolveResult(track=Track(title=keyword, source=TrackSource.QQ),
+                             source=TrackSource.QQ, detail="fake")
+
+    def refresh(self, track):
+        return track
+
+
+class TestIdleDoesNotHoldLockWhileNetworking:
+    """空转补歌持有 ``_idle_lock`` 联网 —— 会让「下一首」卡到网络超时。
+
+    原实现把整个补歌流程包在锁里，而里头会 ``registry.resolve()`` 联网、
+    失败还重试 8 次。实测主播点「下一首」要等 1.6 秒（假 registry），
+    真网络最坏 8 × 15 秒。修法：锁只保护「谁去补」，联网在锁外。
+    """
+
+    def test_resolve_happens_without_holding_idle_lock(self):
+        queue = PlayQueue(idle=True)
+        holder = {}
+
+        def probe():
+            # 解析期间如果 _idle_lock 还被占着，说明又在锁内联网了
+            return holder["svc"]._idle_lock.locked()
+
+        registry = _SlowRegistry(probe)
+        svc = PlaybackService(queue=queue, registry=registry,
+                              idle_pool=["晴天", "成都", "稻香"])
+        holder["svc"] = svc
+        svc._maybe_idle()
+        assert registry.saw_locked is False, \
+            "补歌时仍在持锁联网 —— 违反「持锁不联网」"
+
+    def test_skip_while_idle_is_not_blocked(self):
+        """补歌卡在网络上时，「下一首」不该等它。"""
+        import time
+        queue = PlayQueue(idle=True)
+        registry = _SlowRegistry(lambda: False, delay=0.5)
+        svc = PlaybackService(queue=queue, registry=registry,
+                              idle_pool=["晴天", "成都", "稻香"])
+        # 手动占住 idle 锁，模拟「另一个线程正在补歌」
+        svc._idle_lock.acquire()
+        try:
+            start = time.time()
+            svc._maybe_idle()
+            elapsed = time.time() - start
+            assert elapsed < 0.2, f"「下一首」被补歌阻塞了 {elapsed:.2f}s"
+        finally:
+            svc._idle_lock.release()
+
+
+class TestDeferredLambdaDoesNotCaptureExc:
+    """``except ... as exc`` 里的 ``exc`` 不能进延迟执行的 lambda。
+
+    Python 在 ``except`` 块结束时执行 ``del exc``。lambda 是之后才跑的，
+    那时名字已经没了 → ``NameError``。真实后果：扫码取二维码失败时
+    界面只卡住、不显示错误；后台动作失败时按钮不复原。
+    """
+
+    def test_lambda_after_except_would_fail_without_copy(self):
+        captured = {}
+        try:
+            raise RuntimeError("boom")
+        except Exception as exc:
+            captured["late"] = lambda: str(exc)     # 错误示范
+        with pytest.raises(NameError):
+            captured["late"]()
+
+    def test_copying_text_first_works(self):
+        captured = {}
+        try:
+            raise RuntimeError("boom")
+        except Exception as exc:
+            message = f"失败：{exc}"                 # 正确做法
+            captured["late"] = lambda: message
+        assert captured["late"]() == "失败：boom"
+
+    def test_ui_has_no_exc_reference_inside_lambda(self):
+        """静态扫一遍：`except ... as exc` 所在块里不许有 lambda 引用 exc。"""
+        import ast
+        from pathlib import Path
+        ui = (Path(__file__).resolve().parents[1]
+              / "src" / "diangeji" / "ui" / "main_window.py")
+        tree = ast.parse(ui.read_text(encoding="utf-8"))
+        offenders = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ExceptHandler):
+                continue
+            name = node.name
+            if not name:
+                continue
+            for child in ast.walk(node):
+                if not isinstance(child, ast.Lambda):
+                    continue
+                for inner in ast.walk(child):
+                    if isinstance(inner, ast.Name) and inner.id == name:
+                        offenders.append(f"第 {inner.lineno} 行 lambda 引用了 {name}")
+        assert not offenders, "except 变量被延迟引用：" + "; ".join(offenders)
+
+
+class TestPackagedAssetsExist:
+    """``pyproject.toml`` 的 ``package-data`` 声明了资源，磁盘上就得真有。
+
+    ``py.typed`` 曾经就是这样：声明在包里，文件不存在，装完 PEP 561
+    类型提示静默失效 —— 不报错，只是不生效。
+    """
+
+    def test_py_typed_marker_exists(self):
+        from diangeji import paths
+        assert (paths.package_root() / "py.typed").is_file(), \
+            "pyproject 声明了 py.typed，但包里没有"
+
+    def test_window_icon_exists(self):
+        """UI 现在真的用了 icon.ico（窗口/任务栏图标）。"""
+        from diangeji import paths
+        icon = paths.image_dir() / "icon.ico"
+        assert icon.is_file(), f"窗口图标缺失：{icon}"
+        assert icon.stat().st_size > 0
+
+    def test_templates_exist(self):
+        from diangeji import paths
+        for name in ("index.html", "overlay.html"):
+            assert (paths.template_dir() / name).is_file(), f"缺模板 {name}"
+
+    def test_assets_referenced_by_template_exist(self):
+        """模板里写的 ``/asset/xxx`` 必须能真的取到，否则页面是破图。"""
+        import re
+        from diangeji import paths
+        html = (paths.template_dir() / "index.html").read_text(encoding="utf-8")
+        names = set(re.findall(r'/asset/([\w.]+)', html))
+        assert names, "模板里没有 /asset/ 引用？"
+        available = {p.name for p in paths.image_dir().iterdir() if p.is_file()}
+        available |= {p.name for p in paths.button_image_dir().iterdir()
+                      if p.is_file()}
+        missing = sorted(n for n in names if n not in available)
+        assert not missing, f"模板引用了不存在的资源：{missing}"

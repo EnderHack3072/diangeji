@@ -69,6 +69,17 @@ class QQMusicSource(MusicSource):
     def enabled(self) -> bool:
         return bool(self.cookie())
 
+    def invalidate(self) -> None:
+        """清掉和登录态绑定的缓存（换号、重新扫码之后必须调）。
+
+        ``cookie()`` 是实时读文件的，所以 ``enabled()`` 会立刻正确；
+        但 ``_url_cache`` 里存的是**上一个登录态**拿到的直链，
+        ``_fav_cache`` 是上一个号的红心歌单 —— 不清就会串号。
+        """
+        with self._lock:
+            self._url_cache.clear()
+            self._fav_cache = (0.0, [])
+
     def _uin(self, cookie: str | None = None) -> str:
         ck = self.cookie() if cookie is None else cookie
         for part in ck.split(";"):

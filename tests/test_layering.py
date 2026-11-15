@@ -20,6 +20,10 @@ import pytest
 PACKAGE = Path(__file__).resolve().parents[1] / "src" / "diangeji"
 
 # 每一层允许依赖的层。没列出来的一律禁止。
+#
+# ⚠️ 这份白名单要**按实际需要收紧**，不能图省事把领域层全塞进去 ——
+# 原来 `web` 和 `ui` 用的是同一份字面量，等于允许 `ui` 随便 import
+# `sources.qqmusic`，而架构文档明令禁止。白名单越宽，测试越像摆设。
 ALLOWED: dict[str, set[str]] = {
     "utils": {"logging_setup"},                      # 工具层只许碰日志
     "core": {"utils", "constants", "logging_setup"},  # 领域模型 + 常量 + 日志
@@ -28,10 +32,12 @@ ALLOWED: dict[str, set[str]] = {
     "auth": {"core", "utils", "constants", "logging_setup", "paths"},
     "services": {"core", "sources", "live", "auth", "utils",
                  "constants", "logging_setup", "paths", "config"},
-    "web": {"services", "core", "sources", "live", "auth", "utils",
-            "constants", "logging_setup", "paths", "config"},
-    "ui": {"services", "core", "sources", "live", "auth", "utils",
-           "constants", "logging_setup", "paths", "config"},
+    # web 只通过 services 做业务；core 仅用于异常根类和 LocalLibrary 类型标注
+    "web": {"services", "core", "utils",
+            "constants", "logging_setup", "paths"},
+    # ui 走 app 注入的服务 + 登录相关；不直接碰 core/sources/live
+    "ui": {"app", "auth", "config", "utils",
+           "constants", "logging_setup", "paths"},
 }
 
 # 顶层模块也算「层」
@@ -145,6 +151,31 @@ class TestLayering:
             if "web" in package_targets(path):
                 offenders.append(str(path.relative_to(PACKAGE)))
         assert not offenders, f"这些模块 import 了 web：{offenders}"
+
+    @pytest.mark.parametrize("layer,forbidden", [
+        # 架构文档 §禁止项 逐条钉住，别让白名单悄悄放宽
+        ("web", {"sources", "live", "auth"}),
+        ("ui", {"sources", "live"}),
+        ("services", {"web", "ui"}),
+        ("core", {"sources", "services", "web", "ui", "live"}),
+        ("sources", {"services", "web", "ui", "live"}),
+        ("live", {"services", "web", "ui", "sources"}),
+        ("utils", {"core", "sources", "services", "web", "ui", "live", "auth"}),
+    ])
+    def test_forbidden_edges_are_really_forbidden(self, layer, forbidden):
+        """白名单里没写，就必有一层真的挡住它。
+
+        原来的 ``web``/``ui`` 白名单是同一份字面量、且把领域层全放进去，
+        于是「ui import sources」这种明确禁止的事谁都抓不到。
+        """
+        offenders = []
+        for path in python_files():
+            if layer_of(path) != layer:
+                continue
+            bad = package_targets(path) & forbidden
+            if bad:
+                offenders.append(f"{path.name} → {sorted(bad)}")
+        assert not offenders, f"{layer} 越层依赖：{offenders}"
 
     def test_core_does_not_depend_on_implementations(self):
         """core 只该碰 utils；碰 sources/services 就说明模型层被污染了。"""

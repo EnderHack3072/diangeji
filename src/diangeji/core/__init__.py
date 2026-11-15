@@ -21,7 +21,7 @@ from .errors import (
     TrackNotFoundError,
 )
 from .library import LocalLibrary
-from .models import PlaybackPhase, QueueItem, Track, TrackSource
+from .models import QueueItem, Track, TrackSource
 from .queue import PlayQueue
 
 __all__ = [
@@ -32,7 +32,6 @@ __all__ = [
     "NoPlayableTrackError",
     "TrackNotFoundError",
     "LocalLibrary",
-    "PlaybackPhase",
     "QueueItem",
     "Track",
     "TrackSource",

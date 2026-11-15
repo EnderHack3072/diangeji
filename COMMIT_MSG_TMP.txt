@@ -1,0 +1,30 @@
+外审 6 P0 + 11 P1 + 12 P2 全部修复，测试 324 → 377
+
+安全
+- 新增 is_host_allowed()：所有路径都校验 Host，堵住「伪造 Host 读主播台
+  HTML（含完整队列和观众昵称）」；实测 200/13610B → 403
+- 500 不再回内部异常文本，改由 DianGeJiError.http_status 驱动 400/500 分流
+- constants.LOCAL_HOSTS 补齐 ::1 / [::1]，与 web.security.LOOPBACK 合一
+
+HTTP 正确性
+- Range：畸形头按 RFC 忽略回 200（原来 416 让播放器放弃）；
+  _is_partial() 保证 206 与 Content-Range 同步
+- CLIENT_GONE = (ConnectionError,)：ConnectionAbortedError 是
+  BrokenPipe/ConnectionReset 的兄弟而非子类，Windows 10053 不再刷栈
+- 超大 Content-Length 关闭连接，避免残留字节毒化长连接
+- Windows 端口检测用 SO_EXCLUSIVEADDRUSE（REUSEADDR 允许重复绑定）
+
+并发 / 性能
+- 补歌不再持 _idle_lock 联网：原来最坏阻塞「下一首」8×15 秒
+- /api/state 轮询走轻量快照（不带 log、队列截 50），不再在队列锁里深拷贝
+
+清理
+- 修掉两处 except...as exc 进 lambda 的真实崩溃（扫码失败无提示、失败按钮不复原）
+- 死代码：PlaybackPhase / icon_path / as_legacy_list / png_to_base64 / _load_config
+- 未使用 import 9 个；pyflakes 现在零告警
+- live/__init__ 改 PEP 562 惰性导出，import diangeji.live 不再拉 client 链
+- 版本号三处重复 → __init__ 从 constants re-export，加测试保证与 pyproject 一致
+- py.typed 声明了却不存在 → 补上；icon.ico 一直没人用 → 接到窗口图标
+- test_layering 的 web/ui 白名单原来是同一份且过宽，按实际依赖收紧 + 7 条禁止边
+
+测试 324 → 377（+53），新增回归测试全部先复现再修。

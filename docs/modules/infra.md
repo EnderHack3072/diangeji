@@ -95,6 +95,24 @@ class Config:
 
 **没有逻辑，只有数据。** 改触发词就改这里，别在 `live/commands.py` 里硬编码。
 
+### `LOCAL_HOSTS` —— 回环地址的唯一来源
+
+```python
+LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "[::1]"})
+```
+
+`web/security.py` 的 `LOOPBACK` 就是它的**别名**，不再自己补一份。
+早先两边各存一份（`security` 额外并了 `{"::1", "[::1]"}`），
+结果是「哪些 host 算本机」有两个真相，想放开某个地址得改两处。
+
+`::1` 必须在里面：Windows 上 `localhost` 常先解析到 IPv6，
+漏掉会让浏览器自己打开 `http://localhost:8770` 直接吃 403。
+`[::1]` 是 `Host` 头里的形态（带方括号），两种都要有。
+
+> `ORDER_PREFIXES` 在 `utils/text.py` 里有一份**等价的正则**。那不是循环导入
+> 的规避（`constants` 零 import），而是分层规则：`utils` 不许依赖 `constants`。
+> 代价是改触发词要动两处，所以 `tests/test_infra.py` 有一条测试把两者钉在一起。
+
 ---
 
 ## `logging_setup.py` —— 日志

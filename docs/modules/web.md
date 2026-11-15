@@ -13,16 +13,32 @@
 def parse_host(value) -> str
 def parse_origin(value) -> str
 def is_loopback(host) -> bool
+def is_host_allowed(headers) -> bool          # 新增
 def is_local_request(headers, *, allow_headless=False) -> bool
 ```
 
-`/api/*` 的判定规则：
+判定是**两步**，顺序不能反：
+
+| 步骤 | 覆盖范围 | 规则 |
+|---|---|---|
+| 1. `is_host_allowed()` | **所有**路径（页面、图片、模板、API） | `Host` 必须解析成回环地址，否则 403 |
+| 2. `is_local_request()` | 只有 `/api/*` | 再查 `Origin`/`Referer` |
+
+第 1 步是后补的：原来只挡 `/api/*`，于是伪造 `Host: evil.com` 能直接读到
+主播台 HTML —— 那份 HTML 里带着完整队列和观众昵称。实测修前
+`GET /` + `Host: evil.com` 返回 200、13610 字节。
+
+`/api/*` 在第 2 步的判定规则：
 
 | 情况 | 结果 |
 |---|---|
-| `Host` 不是回环（`127.0.0.1` / `localhost` / `::1`） | 拒绝 |
+| `Host` 不是回环（`127.0.0.1` / `localhost` / `::1`） | 拒绝（第 1 步已拦） |
 | 有 `Origin`/`Referer` 但不是回环 | 拒绝 |
 | **没有** `Origin` 也没有 `Referer` | 默认拒绝，`allow_headless=True` 才放行 |
+
+> `::1` 与 `[::1]` 都在 `constants.LOCAL_HOSTS` 里 —— **唯一来源**。
+> Windows 上 `localhost` 常先解析到 `::1`，漏掉会让浏览器自己打开
+> `http://localhost:8770` 直接吃 403。
 
 最后一条是**唯一会破坏既有用法的改动**：v1.0 对无头请求是放行的，
 挂了 QQ 机器人 / 外部脚本的用户升级后会收到 403。
@@ -69,15 +85,45 @@ def build_server(ctx, port=8770, ...) -> AppServer
 |---|---|---|
 | GET | `/` | 主播台（注入初始状态） |
 | GET | `/overlay` | OBS 覆盖层 |
-| GET | `/api/state` | 完整状态快照 |
+| GET | `/api/state` | 状态快照（轻量：不带 `log`，队列最多 50 条） |
 | GET | `/api/library` | 曲库概要 |
-| GET | `/media/<rel>` | 音频流，支持 Range |
+| GET | `/media/<rel>` | 音频流，支持 Range → `206` + `Content-Range` |
 | GET | `/asset/<name>` | 图片（只允许 png/ico） |
 | POST | `/api/order` | `{"user": "...", "text": "点歌 晴天"}` |
 | POST | `/api/ended` | `{"id": "<曲目id>"}` 上报播完 |
 | POST | `/api/skip` `/api/next` | 下一首 |
 | POST | `/api/prev` | 上一首 |
 | POST | `/api/pause` `/api/volume` `/api/idle` | 控制 |
+
+### `/api/state` 为什么是「轻量」的
+
+`PlayQueue._lock` 保护 `playing/queue/history`，而快照要把每一条
+`to_dict()` 一遍 —— **全部在锁内**。前端每 2 秒轮询一次，热门直播间
+队列几百条时，点歌入队会被轮询挡在后面。
+
+所以 `queue.snapshot(include_log=..., limit=...)`：
+
+- `include_log=False` —— 日志只有界面那个日志框要，轮询不必带最近 40 条。
+  模板对 `s.log` 做了 `|| []` 兜底，少字段不会出错。
+- `limit=50` —— 前端本来就只渲染前几十条。
+
+**默认参数仍是「全都要」**，`GET /` 首屏注入和所有老调用点行为不变。
+
+### Range / 206 / 416 的三条规则
+
+| 请求的 `Range` | 响应 |
+|---|---|
+| 没有，或不是 `bytes=` 开头 | `200` 全量，**不带** `Content-Range` |
+| 正常区间，覆盖整个文件 | `200`（没必要切片） |
+| 正常区间，真正的部分 | `206` + `Content-Range: bytes a-b/size` |
+| 畸形（`bytes=`、`bytes=--`、非数字） | **忽略头**，按 `200` 全量 |
+
+最后一条是后修的：原实现 `except ValueError` 落到 `return None` → 走 416，
+播放器拿到 416 直接放弃不播。RFC 9110 说畸形 `Range` 应当**忽略**，
+不是报错。
+
+`206` 与 `Content-Range` 必须**同时出现或同时不出现**：原实现无条件发
+`Content-Range` 却回 200，浏览器据此判断「服务器支持分段」，seek 就乱了。
 | POST | `/api/remove` `/api/clear` | 队列操作 |
 
 ### 几个实现细节
@@ -87,10 +133,18 @@ def build_server(ctx, port=8770, ...) -> AppServer
 HTTP/1.1 是长连接。POST 请求被拒时不读请求体，那堆字节还留在 socket 里，
 下一个请求解析就会错位。所以 `do_POST` 里先 `_drain()` 再 `_forbidden()`。
 
-**② Range 支持（`_parse_range()`）**
+**② Range 支持（`_parse_range()` / `_is_partial()`）**
 
 音频拖动进度条必须有 206。`_parse_range()` 处理 `bytes=0-`、`bytes=-500`、
-多段（不支持，退化成一整块）等写法，非法值返回 `None` → 416。
+多段（不支持，退化成一整块）等写法。
+
+~~非法值返回 `None` → 416~~ —— **这条已经改了**：畸形 `Range`
+（`bytes=`、`bytes=--`、非数字）现在**忽略这个头**，回 200 全量。
+按 RFC 9110，畸形 `Range` 该被忽略而不是报错；回 416 会让播放器
+直接放弃播放。只有「区间语法正确但越界」才轮到 416。
+
+`_is_partial(header, span, size)` 决定状态码：没有头、不是 `bytes=` 开头、
+或者区间等于整个文件 → 不是部分响应 → 200 且**不发** `Content-Range`。
 
 **③ `HEAD` 请求**
 
@@ -110,12 +164,48 @@ Windows 的 `SO_REUSEADDR` 允许**两个 socket 绑同一端口** —— 于是
 
 **⑤ 异常分层**
 
+状态码由 `DianGeJiError.http_status` 决定，**不是**按异常类硬编码：
+
 ```python
-except DianGeJiError as exc:        # 业务异常 → 400 + 人话
-    self._json({"ok": False, "error": str(exc)}, 400)
-except Exception:                   # 其他 → 500，栈只进日志
-    log.exception(...)
+class DianGeJiError(Exception):
+    http_status = 400        # 默认：用户能自己修
 ```
+
+| 异常 | `http_status` | 前端看到 |
+|---|---|---|
+| `EmptyKeywordError` | 400 | 「空的点歌关键词」 |
+| `TrackNotFoundError` / `NoPlayableTrackError` | 400 | 具体原因 |
+| `DuplicateTrackError` | 400 | 「已经在队列里」 |
+| `LibraryUnavailableError` | 500 | `INTERNAL_ERROR`，详情只进日志 |
+
+```python
+except DianGeJiError as exc:        # → self._domain_error(exc)
+    if exc.http_status >= 500:
+        log.error(..., exc_info=True)      # 完整栈写日志
+        self._json({"ok": False, "error": INTERNAL_ERROR}, 500)
+    else:
+        self._json({"ok": False, "error": str(exc)}, exc.http_status)
+except Exception:                   # 未知异常 → 500，文本绝不外泄
+    log.exception(...)
+    self._json({"ok": False, "error": INTERNAL_ERROR}, 500)
+```
+
+划分标准是**「谁能修」**：400 = 用户改一下关键词就行；500 = 服务端的问题，
+回什么都帮不了用户，只会泄漏路径/token。
+
+`EmptyKeywordError` 同时继承 `ValueError`，因为 `PlaybackService` 早期
+抛的就是裸 `ValueError`，老调用方有 `except ValueError` 的不能断。
+
+**⑥ 客户端断连（`CLIENT_GONE`）**
+
+```python
+CLIENT_GONE = (ConnectionError,)
+```
+
+原本写的是 `(BrokenPipeError, ConnectionResetError)` —— 漏掉了
+`ConnectionAbortedError`。**它是这两者的兄弟，不是子类**：三个类
+共同的父类是 `ConnectionError`。Windows 上客户端半路关连接报的正是
+`ConnectionAbortedError [WinError 10053]`，于是日志被栈刷满。
 
 ---
 

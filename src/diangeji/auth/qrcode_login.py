@@ -9,14 +9,13 @@
 
 from __future__ import annotations
 
-import base64
 import http.cookiejar
 import json
 import re
 import time
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
@@ -126,8 +125,6 @@ def _trim_and_pad(matrix: list[list[bool]], border: int = 2) -> list[list[bool]]
     return pad + body + [row[:] for row in pad]
 
 
-def png_to_base64(payload: bytes) -> str:
-    return base64.b64encode(payload).decode("ascii")
 
 
 # ---------------------------------------------------------------- B 站

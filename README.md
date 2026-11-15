@@ -122,7 +122,7 @@ diangeji --headless   # 只跑服务，不开界面
 │       ├── text.py
 │       └── timeutil.py
 │
-├── tests/                  # 324 项测试，pytest
+├── tests/                  # 377 项测试，pytest
 └── docs/
     ├── architecture.md     # 分层约定与依赖规则
     └── modules/            # 各子包详细文档
@@ -271,7 +271,7 @@ curl -X POST http://127.0.0.1:8770/api/order \
 
 ```bash
 pip install -e ".[dev]"
-pytest                         # 324 项
+pytest                         # 377 项
 pytest -q tests/test_core.py   # 单文件
 ```
 

@@ -19,8 +19,10 @@ from typing import Mapping
 
 from ..constants import LOCAL_HOSTS
 
-#: 回环地址集合（含 IPv6）
-LOOPBACK = frozenset({"127.0.0.1", "localhost", "::1", "[::1]"})
+#: 回环地址集合。**唯一来源是 ``constants.LOCAL_HOSTS``** —— 早先这里又并了一份
+#: ``{"::1", "[::1]"}``，于是「哪些 host 算本机」有两个真相，
+#: 想放开某个地址得改两处。现在只保留别名，方便本层代码少写一截 import。
+LOOPBACK = LOCAL_HOSTS
 
 
 def parse_host(value: str | None) -> str:
@@ -49,7 +51,24 @@ def parse_origin(value: str | None) -> str:
 
 
 def is_loopback(host: str) -> bool:
-    return host in LOCAL_HOSTS or host in LOOPBACK
+    return host in LOCAL_HOSTS
+
+
+def is_host_allowed(headers: Mapping[str, str] | Message) -> bool:
+    """只看 ``Host`` 是不是回环 —— 挡 DNS rebinding。
+
+    这一步**对所有路径**都要做，不只是 ``/api/``：攻击者 rebind 之后，
+    ``fetch('/')`` 拿到的主播台 HTML 里就带着完整队列、当前播放项和观众昵称，
+    ``/media/*`` 还能把音频整段拖走。写入挡住了而读取全开，等于没挡。
+
+    单独拆成函数而不是塞进 :func:`is_local_request`，是因为两者防的是不同的
+    东西（rebinding vs. 跨站请求），合在一起会让人以为「校验过了」。
+    """
+    if not hasattr(headers, "get"):
+        return False
+    raw = headers.get("Host")
+    host = parse_host(str(raw) if raw else "")
+    return bool(host) and is_loopback(host)
 
 
 def is_local_request(headers: Mapping[str, str] | Message,

@@ -168,6 +168,3 @@ class LocalLibrary:
 
     # ---- 兼容 ----
 
-    def as_legacy_list(self) -> list[dict[str, object]]:
-        """旧代码里 ``LIB`` 那种 ``[{"title","path","mid","source"}]`` 结构。"""
-        return self.entries()

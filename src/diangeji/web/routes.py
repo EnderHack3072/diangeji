@@ -18,23 +18,26 @@ import socket
 import urllib.parse
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from ..constants import (
-    APP_NAME,
     APP_VERSION,
     AUDIO_MIME,
-    CONSOLE_QUERY,
     DEFAULT_PORT,
     MAX_BODY_BYTES,
 )
 from ..core.errors import DianGeJiError
-from ..core.library import LocalLibrary
 from ..logging_setup import get_logger
 from ..paths import button_image_dir, image_dir, template_dir
 from ..services.playback import PlaybackService
 from ..utils.text import strip_order_prefix
-from .security import is_local_request
+from .security import is_host_allowed, is_local_request
+
+if TYPE_CHECKING:
+    # ``LocalLibrary`` 只用于类型标注，运行时不需要 —— 放进 TYPE_CHECKING
+    # 后 ``web`` 层不再真正依赖 ``core.library`` 这个具体类，只依赖
+    # ``core.errors.DianGeJiError``（那是契约的一部分）。
+    from ..core.library import LocalLibrary
 from .views import render_console, render_overlay
 
 log = get_logger(__name__)
@@ -46,6 +49,23 @@ MIME_TEXT = "text/plain; charset=utf-8"
 
 #: 「需要 --allow-headless-api」这条提示每次启动只喊一次，别刷屏
 _HEADLESS_HINTED = False
+
+#: 客户端中途断开时该吞掉的异常。
+#:
+#: 注意 ``ConnectionAbortedError`` 是 ``BrokenPipeError`` / ``ConnectionResetError``
+#: 的**兄弟**，不是子类 —— 只写前两个接不住它。而 Windows 上播放器切歌、
+#: 关页面、OBS 重载抛的恰恰是 ``ConnectionAbortedError [WinError 10053]``，
+#: 漏掉它会让每次断开都刷一条 traceback，最后只回一个畸形的 500。
+#: 统一的父类 ``ConnectionError`` 最稳，这三者都是它的子类。
+CLIENT_GONE = (ConnectionError,)
+
+#: 500 一律回固定文案。``str(exc)`` 里可能是绝对路径、临时文件名之类的
+#: 服务端细节 —— 那属于日志，不属于交出给浏览器的响应体。
+INTERNAL_ERROR = "服务器内部错误（详情见日志）"
+
+#: /api/state 每次轮询最多回多少条队列。
+#: 前端只渲染前几十条，把几百条全序列化既慢又占带宽，而且是在队列锁里做的。
+STATE_QUEUE_LIMIT = 50
 
 
 @dataclass
@@ -89,11 +109,25 @@ class RequestHandler(BaseHTTPRequestHandler):
         if self.command != "HEAD":
             try:
                 self.wfile.write(body)
-            except (BrokenPipeError, ConnectionResetError):
+            except CLIENT_GONE:
                 pass
 
     def _json(self, payload: Any, code: int = 200) -> None:
         self._send(code, json.dumps(payload, ensure_ascii=False), MIME_JSON)
+
+    def _domain_error(self, exc: DianGeJiError) -> None:
+        """把领域异常翻成响应。
+
+        ``http_status`` 决定 400 还是 500 —— 别再写死 400，
+        「模板缺失」交给用户看 400 是没有意义的，他改不了。
+        500 的详情只进日志，不交给浏览器。
+        """
+        status = int(getattr(exc, "http_status", 400) or 400)
+        if status >= 500:
+            log.error("业务异常（服务端）: %s", exc, exc_info=True)
+            self._json({"ok": False, "error": INTERNAL_ERROR}, status)
+        else:
+            self._json({"ok": False, "error": str(exc)}, status)
 
     def _forbidden(self) -> None:
         hint = ("本接口只接受本机浏览器发来的请求。脚本 / QQ 机器人 / 自动化工具"
@@ -101,7 +135,19 @@ class RequestHandler(BaseHTTPRequestHandler):
         self._json({"ok": False, "error": "forbidden", "hint": hint}, 403)
 
     def _check_local(self, path: str) -> bool:
-        """/api/* 走严格校验；静态资源不校验（本来就是给本机页面用的）。"""
+        """两道不同的校验，别合并：
+
+        1. **所有**请求先验 ``Host`` 是不是回环 —— 挡 DNS rebinding。
+           攻击者把 ``evil.com`` 解析到 127.0.0.1 后，浏览器眼里它和本地服务
+           同源，JS 就能 ``fetch('/')`` 把整个队列读走。这一步跟 ``/api/``
+           无关，页面和图片同样是数据（观众昵称、点了什么歌）。
+        2. ``/api/*`` 再追加 ``Origin``/``Referer`` 校验 —— 挡跨站请求。
+           静态资源不查这个：浏览器加载 ``<img>`` / ``<audio>`` 不带这些头。
+        """
+        if not is_host_allowed(self.headers):
+            log.warning("拒绝非回环 Host 的请求：%s %s（可疑 Host: %s）",
+                        self.command, path, self.headers.get("Host"))
+            return False
         if not path.startswith("/api/"):
             return True
         if is_local_request(self.headers, allow_headless=self.ctx.allow_headless):
@@ -127,8 +173,15 @@ class RequestHandler(BaseHTTPRequestHandler):
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except (TypeError, ValueError):
+            self.close_connection = True
             return {}
-        if length <= 0 or length > MAX_BODY_BYTES:
+        if length <= 0:
+            return {}
+        if length > MAX_BODY_BYTES:
+            # 不读就返回会把 body 留在 socket 里，下一条请求会把它当成请求行
+            # （实测会得到 "501 Unsupported method ('{\"text\":\"x\"}GET')"）。
+            # 这里必须关连接，宁可牺牲一次 keep-alive 也不能污染下一条请求。
+            self.close_connection = True
             return {}
         try:
             raw = self.rfile.read(length)
@@ -147,10 +200,10 @@ class RequestHandler(BaseHTTPRequestHandler):
         try:
             self._route_get(path)
         except DianGeJiError as exc:
-            self._json({"ok": False, "error": str(exc)}, 400)
-        except Exception as exc:  # pragma: no cover - 兜底，别把栈泄给浏览器
+            self._domain_error(exc)
+        except Exception:  # pragma: no cover - 兜底，别把栈泄给浏览器
             log.exception("GET %s 失败", path)
-            self._json({"ok": False, "error": str(exc)}, 500)
+            self._json({"ok": False, "error": INTERNAL_ERROR}, 500)
 
     def _route_get(self, path: str) -> None:
         ctx = self.ctx
@@ -181,7 +234,9 @@ class RequestHandler(BaseHTTPRequestHandler):
 
     def _state_payload(self) -> dict[str, Any]:
         ctx = self.ctx
-        payload = ctx.playback.snapshot()
+        # 轮询路径：不带日志、队列截断。日志框有 ``(s.log || [])`` 兜底，
+        # 少了字段不会出错；完整日志由 / 首屏注入。
+        payload = ctx.playback.snapshot(include_log=False, limit=STATE_QUEUE_LIMIT)
         payload["dm"] = ctx.danmaku_state() if ctx.danmaku_state else {}
         payload["lib"] = len(ctx.library)
         return payload
@@ -195,12 +250,12 @@ class RequestHandler(BaseHTTPRequestHandler):
         base = os.path.basename(decoded.replace("\\", "/"))
         if not base or not base.lower().endswith((".png", ".ico")):
             return self._send(404, "no asset", MIME_TEXT)
-        for directory, ctype in ((ctx.image_dir, MIME_PNG), (ctx.button_dir, MIME_PNG),
-                                 (ctx.image_dir, "image/x-icon")):
+        # MIME 由扩展名决定，不需要按目录指定 —— 原来第三项又回到 image_dir
+        # 只换个 content-type，等于把同一个目录白找一遍，永远命中不了新文件。
+        ctype = "image/x-icon" if base.lower().endswith(".ico") else MIME_PNG
+        for directory in (ctx.image_dir, ctx.button_dir):
             candidate = os.path.join(str(directory), base)
             if os.path.isfile(candidate):
-                if base.lower().endswith(".ico"):
-                    ctype = "image/x-icon"
                 return self._send(200, _read_bytes(candidate), ctype)
         return self._send(404, "no asset", MIME_TEXT)
 
@@ -214,17 +269,19 @@ class RequestHandler(BaseHTTPRequestHandler):
         size = os.path.getsize(target)
         ctype = AUDIO_MIME.get(os.path.splitext(target)[1].lower(),
                                "application/octet-stream")
-        span = _parse_range(self.headers.get("Range"), size)
+        range_header = self.headers.get("Range")
+        span = _parse_range(range_header, size)
         if span is None:
             return self._send(416, "range not satisfiable", MIME_TEXT)
         start, end = span
         length = end - start + 1
+        partial = _is_partial(range_header, span, size)
 
-        self.send_response(206 if self.headers.get("Range") else 200)
+        self.send_response(206 if partial else 200)
         self.send_header("Content-Type", ctype)
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Content-Length", str(length))
-        if self.headers.get("Range"):
+        if partial:
             self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
@@ -241,7 +298,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                     break
                 try:
                     self.wfile.write(chunk)
-                except (BrokenPipeError, ConnectionResetError):
+                except CLIENT_GONE:
                     return
                 remaining -= len(chunk)
 
@@ -256,12 +313,19 @@ class RequestHandler(BaseHTTPRequestHandler):
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except (TypeError, ValueError):
+            self.close_connection = True
             return
-        if 0 < length <= MAX_BODY_BYTES:
-            try:
-                self.rfile.read(length)
-            except (OSError, ValueError):
-                pass
+        if length <= 0:
+            return
+        if length > MAX_BODY_BYTES:
+            # 太大了不敢读（可能等半天），但也不能就这么走 —— 残留字节会被
+            # 下一条请求当成请求行解析。直接标记连接不可复用，让服务端关掉它。
+            self.close_connection = True
+            return
+        try:
+            self.rfile.read(length)
+        except (OSError, ValueError):
+            self.close_connection = True
 
     def do_POST(self) -> None:  # noqa: N802
         path = urllib.parse.urlparse(self.path).path
@@ -272,12 +336,12 @@ class RequestHandler(BaseHTTPRequestHandler):
         try:
             self._route_post(path, data)
         except DianGeJiError as exc:
-            self._json({"ok": False, "error": str(exc)}, 400)
+            self._domain_error(exc)
         except ValueError as exc:
             self._json({"ok": False, "error": str(exc)}, 400)
-        except Exception as exc:  # pragma: no cover
+        except Exception:  # pragma: no cover
             log.exception("POST %s 失败", path)
-            self._json({"ok": False, "error": str(exc)}, 500)
+            self._json({"ok": False, "error": INTERNAL_ERROR}, 500)
 
     def _route_post(self, path: str, data: dict[str, Any]) -> None:
         playback = self.ctx.playback
@@ -339,15 +403,20 @@ def _read_bytes(path: str) -> bytes:
 def _parse_range(header: str | None, size: int) -> tuple[int, int] | None:
     """解析 ``Range`` 头，返回 ``(start, end)``（含两端）。
 
-    * 无 Range → 整个文件
+    * 无 Range / **语法非法** → 整个文件（按 RFC 7233，非法 Range 应当忽略）
     * ``bytes=100-`` → 100 到末尾
     * ``bytes=100-200``
     * ``bytes=-500`` → **最后** 500 字节（原实现错当成 0-500）
     * 越界 → ``None``（调用方回 416）
+
+    返回值不带「这是不是真的 Range」的信息 —— 那由 :func:`_range_is_satisfiable`
+    和调用方共同判断，别在这里混进 HTTP 语义。
     """
     if size <= 0:
         return None
-    if not header or not header.startswith("bytes="):
+    if not header:
+        return 0, size - 1
+    if not header.startswith("bytes="):
         return 0, size - 1
     spec = header[6:].strip()
     if "," in spec:  # 多段不支持，退化成一整块
@@ -367,12 +436,28 @@ def _parse_range(header: str | None, size: int) -> tuple[int, int] | None:
         start = int(start_text)
         end = int(end_text) if end_text else size - 1
     except ValueError:
+        # 语法非法：按 RFC 忽略这个头，回 200 + 整个文件。
+        # 注意不能返回 None（那是 416 的意思）。
         return 0, size - 1
     if start < 0 or start >= size:
         return None
     if end < start:
         end = size - 1
     return start, min(end, size - 1)
+
+
+def _is_partial(header: str | None, span: tuple[int, int], size: int) -> bool:
+    """这个响应该发 206 吗？
+
+    只有「客户端真的请求了部分内容」才发 206。原实现是
+    ``206 if self.headers.get("Range") else 200`` —— 只要带了 Range 头就 206，
+    于是 ``bytes=abc-def`` 这种畸形头会得到一个「声称是部分内容、实际是完整
+    文件、Content-Range 覆盖全文件」的响应。Safari / iOS 的 ``<audio>`` 拿到
+    这种响应会判定不可 seek 或直接中断。
+    """
+    if not header or not header.startswith("bytes="):
+        return False
+    return span != (0, size - 1)
 
 
 def make_handler(ctx: AppContext) -> type[RequestHandler]:
@@ -422,6 +507,7 @@ __all__ = [
     "build_server",
     "make_handler",
     "MIME_HTML",
-    "CONSOLE_QUERY",
-    "APP_NAME",
+    "MIME_JSON",
+    "MIME_PNG",
+    "MIME_TEXT",
 ]

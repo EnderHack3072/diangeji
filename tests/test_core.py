@@ -103,6 +103,37 @@ class TestPlayQueue:
         state = queue.advance(refresh=refresh)
         assert state["playing"]["path"] == "/fresh.mp3"
 
+    def test_snapshot_can_omit_log(self):
+        """轮询路径不该每次都深拷贝 40 条日志。"""
+        queue = PlayQueue(idle=False)
+        queue.push(QueueItem(keyword="a", title="a", path="/a.mp3"))
+        queue.note("hello")
+
+        full = queue.snapshot()
+        light = queue.snapshot(include_log=False)
+        assert "log" in full and full["log"]
+        assert "log" not in light, "轻量快照不该带日志"
+
+    def test_snapshot_can_limit_queue(self):
+        queue = PlayQueue(idle=False)
+        for i in range(80):
+            queue.push(QueueItem(keyword=f"k{i}", title=f"t{i}", path=f"/{i}.mp3"))
+        # 第一首直接顶上播放位，队列里剩 79 条
+        assert len(queue.snapshot()["queue"]) == 79
+        limited = queue.snapshot(limit=50)["queue"]
+        assert len(limited) == 50
+        # 保留的是**队首**（马上要播的），不是队尾
+        assert limited[0]["title"] == "t1"
+
+    def test_snapshot_default_is_unchanged(self):
+        """默认参数下行为必须和以前完全一样，老调用点不受影响。"""
+        queue = PlayQueue(idle=False)
+        queue.push(QueueItem(keyword="a", title="a", path="/a.mp3"))
+        state = queue.snapshot()
+        for key in ("queue", "playing", "history", "log", "paused",
+                    "volume", "idle", "idle_last", "pending"):
+            assert key in state, f"默认快照缺字段：{key}"
+
     def test_previous_swaps(self):
         queue = PlayQueue(idle=False)
         queue.push(QueueItem(keyword="a", title="a", path="/a.mp3"))

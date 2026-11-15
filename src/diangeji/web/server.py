@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import os
 import socket
 import threading
 import time
@@ -104,9 +105,17 @@ class HttpService:
 
     @staticmethod
     def port_available(port: int, host: str = "127.0.0.1") -> bool:
-        """端口是否空闲（启动前自检，给界面提示用）。"""
+        """端口是否空闲（启动前自检，给界面提示用）。
+
+        **必须用 ``SO_EXCLUSIVEADDRUSE``，不能用 ``SO_REUSEADDR``。**
+        Windows 上 ``SO_REUSEADDR`` 允许 bind 一个已经被别人占着的端口，
+        于是「端口被占用」这个探针唯一要回答的问题，答案永远是「空闲」。
+        而 :class:`AppServer` 绑定时用的是独占语义 —— 探针和真实绑定
+        得用同一套，否则探针就是个假保险。
+        """
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            if os.name == "nt":
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
             try:
                 sock.bind((host, port))
                 return True
@@ -114,10 +123,21 @@ class HttpService:
                 return False
 
     def wait_ready(self, timeout: float = 5.0) -> bool:
-        """等服务真正可访问（测试和界面自检用）。"""
+        """等端口真的开始接受连接。
+
+        原来的判据 ``self.running and not port_available(...)`` 是反的：
+        服务起来了 → 端口被自己占着 → ``port_available`` 返回 False →
+        ``not False`` = True → 立刻返回 True，什么都没验证。
+
+        现在改成真的去连一下：连得上就说明在服务。
+        """
         deadline = time.time() + timeout
         while time.time() < deadline:
-            if self.running and not self.port_available(self.port, self.host):
-                return True
-            time.sleep(0.05)
-        return self.running
+            if not self.running:
+                return False
+            try:
+                with socket.create_connection((self.host, self.port), timeout=0.5):
+                    return True
+            except OSError:
+                time.sleep(0.05)
+        return False

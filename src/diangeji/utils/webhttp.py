@@ -38,8 +38,13 @@ def request(url: str, *, data: bytes | None = None, headers: Mapping[str, str] |
 
 
 def get_json(url: str, *, headers: Mapping[str, str] | None = None,
-             timeout: float = DEFAULT_TIMEOUT, parse_error_ok: bool = False) -> Any:
-    """GET 并解析 JSON。失败返回 ``None``（除非 ``parse_error_ok=False`` 且要抛）。"""
+             timeout: float = DEFAULT_TIMEOUT) -> Any:
+    """GET 并解析 JSON。任何失败（网络、状态码、解析）都返回 ``None``。
+
+    调用方都是「拿不到就算了」的语义，所以不抛。
+    原来还有一个 ``parse_error_ok`` 参数，但函数体里一次都没用到 ——
+    传 True 和传 False 行为完全一样，纯属误导，已删除。
+    """
     try:
         raw = request(url, headers=headers, timeout=timeout)
     except HttpError as exc:

@@ -33,8 +33,12 @@ MIN_AUDIO_BYTES = 300 * 1024
 #: 弹幕点歌触发词
 ORDER_PREFIXES = ("点歌", "点播", "来一首", "想听")
 
-#: 允许访问本地服务的 Host / Origin 主机名
-LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost"})
+#: 允许访问本地服务的 Host / Origin 主机名。
+#:
+#: 含 IPv6 回环：Windows 上 ``localhost`` 经常先解析到 ``::1``，
+#: 只列 ``127.0.0.1`` 会让浏览器自己打开 `http://localhost:8770`
+#: 直接吃 403。``[::1]`` 是 Host 头里的形态（带方括号）。
+LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "[::1]"})
 
 #: 状态里日志与历史的保留条数
 LOG_KEEP = 40

@@ -19,7 +19,6 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Iterable
 
-from ..constants import UA_DESKTOP
 from ..logging_setup import get_logger
 from ..utils.ws import WSClient
 

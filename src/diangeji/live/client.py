@@ -16,7 +16,7 @@ import socket
 import threading
 import time
 from collections import OrderedDict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable
 
 from ..constants import BILI_LIVE_URL, UA_DESKTOP

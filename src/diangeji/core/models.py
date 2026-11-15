@@ -33,14 +33,6 @@ class TrackSource(str, Enum):
         return {TrackSource.LOCAL: "本地曲库", TrackSource.QQ: "QQ 音乐"}.get(self, "未知来源")
 
 
-class PlaybackPhase(str, Enum):
-    """播放状态机。只用于内部判断，不直接暴露给前端。"""
-
-    IDLE = "idle"          # 没有在播
-    PLAYING = "playing"    # 正常播放
-    PAUSED = "paused"      # 暂停
-
-
 def new_id() -> str:
     """队列项 ID：8 位十六进制，够用且短。"""
     return uuid.uuid4().hex[:8]

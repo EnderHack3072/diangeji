@@ -150,5 +150,3 @@ def button_image_dir() -> Path:
     return image_dir() / "buttons"
 
 
-def icon_path() -> Path:
-    return image_dir() / "icon.ico"

@@ -4,8 +4,10 @@
 两边都只调用这里的服务对象。
 
 * ``playback``  播放编排（点歌 → 解析 → 入队 → 切歌 → 空闲随机）
-* ``browser``   浏览器自动化（启动 Edge、CDP 取 cookie）
 * ``library_service`` 曲库扫描的组装
+
+（浏览器自动化在 ``auth/browser.py``，不属于本层 —— 早先这里写了
+``browser``，但那个模块从来没放在 ``services/`` 下。）
 """
 
 from __future__ import annotations

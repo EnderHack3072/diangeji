@@ -146,6 +146,22 @@ switched, snapshot = queue.advance_if_playing(item_id)
 
 前端两个页面都靠这个结构渲染，**改字段名要同时改两份模板**。
 
+### 轮询用的轻量快照
+
+```python
+snapshot(include_log=True, limit=None) -> dict
+```
+
+所有 `to_dict()` 都在 `_lock` **里面**跑，而 `push()` / `advance()` 抢的是
+同一把锁 —— 前端轮询越勤、队列越长，点歌入队被挡得越久。
+
+- `include_log=False` —— 省略 `log` 键。只有界面那个日志框要它，
+  `/api/state` 每 2 秒拉一次没必要带最近 40 条。模板有 `|| []` 兜底。
+- `limit=N` —— 只回队列**前 N 条**（队首，即马上要播的）。
+
+默认值仍是「全都要」，老调用点行为不变。
+`/api/state` 走 `include_log=False, limit=50`。
+
 ---
 
 ## `library.py` —— 本地曲库
@@ -159,7 +175,6 @@ class LocalLibrary:
     def find(keyword) -> dict | None           # 单条
     def path_for(rel) -> Path                  # 相对路径 → 绝对路径
     def entries() / count() / sample(limit)
-    def as_legacy_list() -> ...
 ```
 
 - `search()` 返回**字典**（给 HTTP 层的 JSON 用），不是 `Track`。
@@ -174,14 +189,25 @@ class LocalLibrary:
 ## `errors.py` —— 异常
 
 ```python
-DianGeJiError(Exception)                 # 基类
-├── EmptyKeywordError                    # 空关键词
+DianGeJiError(Exception)                 # 基类，http_status = 400
+├── EmptyKeywordError(DianGeJiError, ValueError)   # 空关键词
 ├── TrackNotFoundError                   # 找不到
 ├── NoPlayableTrackError                 # 找到但播不了
-├── LibraryUnavailableError              # 曲库不可用
-└── DuplicateTrackError                  # 重复点歌
+├── LibraryUnavailableError              # 曲库不可用，http_status = 500
+└── DuplicateTrackError(DianGeJiError, ValueError)  # 重复点歌
 ```
 
-HTTP 层只捕获 `DianGeJiError` 并转成 400 + `{"ok": false, "error": "..."}`；
-其他异常一律 500 且不把栈泄给浏览器。所以**业务异常要继承它**，
-才能在界面上变成一句人话而不是「服务器内部错误」。
+每个异常靠**类属性** `http_status` 声明该回什么状态码，HTTP 层据此分流 ——
+不再按异常类名硬编码：
+
+| `http_status` | 含义 | 前端看到 |
+|---|---|---|
+| 400（默认） | 用户改一下就好 | `str(exc)` 原文 |
+| 500 | 服务端的问题 | `INTERNAL_ERROR`，详情只进日志 |
+
+`EmptyKeywordError` 和 `DuplicateTrackError` **额外继承 `ValueError`**：
+早期 `PlaybackService` 抛的是裸 `ValueError`，外部有 `except ValueError`
+的调用方不能因为这次重构断掉。
+
+HTTP 层只捕获 `DianGeJiError`；其他异常一律 500 且不把栈泄给浏览器。
+所以**业务异常要继承它**，才能在界面上变成一句人话而不是「服务器内部错误」。

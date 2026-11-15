@@ -16,9 +16,9 @@ from pathlib import Path
 from typing import Callable
 
 from .auth.browser import BrowserLogin
-from .auth.store import BILI_COOKIE, QQ_COOKIE, CookieStore
+from .auth.store import BILI_COOKIE, CookieStore
 from .config import Config
-from .constants import APP_VERSION, CDP_PORT_QQ, DEFAULT_PORT
+from .constants import APP_VERSION, CONSOLE_QUERY, DEFAULT_PORT
 from .core.library import LocalLibrary
 from .core.queue import PlayQueue
 from .live.client import DanmakuClient
@@ -29,7 +29,7 @@ from .services.library_service import LibraryService
 from .services.playback import PlaybackService
 from .sources.local_source import LocalSource
 from .sources.qqmusic import QQMusicConfig, QQMusicSource
-from .sources.registry import default_registry
+from .sources.registry import SourceRegistry, default_registry
 from .web.routes import AppContext
 from .web.server import HttpService
 
@@ -45,7 +45,7 @@ class Application:
     library: LocalLibrary
     library_service: LibraryService
     qq_source: QQMusicSource
-    registry: object
+    registry: SourceRegistry
     playback: PlaybackService
     cookies: CookieStore
     browser: BrowserLogin
@@ -140,8 +140,16 @@ class Application:
     # ---------------- 登录态 ----------------
 
     def refresh_sources(self) -> None:
-        """cookie 变了以后让 QQ 音源重新可用。"""
-        log.info("QQ 音乐登录态：%s", "已登录" if self.qq_source.enabled() else "未登录")
+        """cookie 变了以后让 QQ 音源重新可用。
+
+        原来这个函数只打了一行日志，docstring 却承诺「让音源重新可用」——
+        ``cookie()`` 确实每次实时读文件，所以 ``enabled()`` 会立刻正确；
+        真正需要清的是**和登录态绑定的缓存**（直链、红心歌单），
+        不清就会用上一个号的直链去播新号点的歌。
+        """
+        self.qq_source.invalidate()
+        log.info("QQ 音乐登录态：%s（已清空直链/歌单缓存）",
+                 "已登录" if self.qq_source.enabled() else "未登录")
 
     # ---------------- 生命周期 ----------------
 
@@ -183,7 +191,7 @@ class Application:
         self.http.stop()
 
     def console_url(self, mute: bool = True) -> str:
-        return self.http.url + ("?mute=1" if mute else "")
+        return self.http.url + (CONSOLE_QUERY if mute else "")
 
     def overlay_url(self) -> str:
         return self.http.url + "overlay"

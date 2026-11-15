@@ -287,6 +287,21 @@ class TestConstants:
         from diangeji.constants import ORDER_PREFIXES
         assert ORDER_PREFIXES and all(ORDER_PREFIXES)
 
+    def test_order_prefixes_match_text_module(self):
+        """``constants.ORDER_PREFIXES`` 和 ``utils/text.py`` 的正则必须一致。
+
+        ``utils`` 层不许依赖 ``constants``（分层规则），所以触发词只能存两份。
+        那就在测试里把两份钉在一起：改了一处忘了另一处会立刻红。
+        之前的注释谎称「避免循环导入」，没有任何机制保证一致性。
+        """
+        from diangeji.constants import ORDER_PREFIXES
+        from diangeji.utils.text import strip_order_prefix
+        for prefix in ORDER_PREFIXES:
+            assert strip_order_prefix(f"{prefix} 晴天") == "晴天", \
+                f"text.py 不认识 constants 里的触发词「{prefix}」"
+        # 反过来：不该被当成点歌的句子
+        assert strip_order_prefix("这歌真好听") == "这歌真好听"
+
     def test_audio_extensions_cover_mime(self):
         from diangeji.constants import AUDIO_EXTENSIONS, AUDIO_MIME
         assert set(AUDIO_EXTENSIONS) == set(AUDIO_MIME)
@@ -336,3 +351,28 @@ class TestLoggingSetup:
         logging_setup.setup(log_file=target, console=False)
         logging_setup.get_logger("x").info("中文日志测试")
         assert "中文日志测试" in target.read_text(encoding="utf-8")
+
+
+class TestVersionConsistency:
+    """版本号散在多处，改漏一处就是发布事故。"""
+
+    def test_init_and_constants_agree(self):
+        import diangeji
+        from diangeji.constants import APP_VERSION
+        assert diangeji.__version__ == APP_VERSION
+
+    def test_pyproject_matches_package(self):
+        import re
+        from pathlib import Path
+        import diangeji
+        root = Path(__file__).resolve().parents[1]
+        text = (root / "pyproject.toml").read_text(encoding="utf-8")
+        match = re.search(r'^version\s*=\s*"([^"]+)"', text, re.M)
+        assert match, "pyproject.toml 里找不到 version"
+        assert match.group(1) == diangeji.__version__, \
+            f"pyproject={match.group(1)} 但包内是 {diangeji.__version__}"
+
+    def test_app_name_agrees(self):
+        import diangeji
+        from diangeji.constants import APP_NAME
+        assert diangeji.__app_name__ == APP_NAME

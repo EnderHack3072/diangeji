@@ -378,3 +378,130 @@ pip → `%LOCALAPPDATA%\点歌姬数据`，都不再嵌套。
 `test_regressions.py` 29 → 39：9 份模块文档的存在性与内容厚度、
 索引链接可达性。
 
+
+## 45 — 修完外审 6 个 P0（安全 + HTTP 正确性）
+
+外审报告 6 条 P0 全部修掉，每条都先**实测复现**再改：
+
+| # | 问题 | 修法 |
+|---|---|---|
+| P0-1 | 伪造 `Host: evil.com` 能读主播台 HTML（含完整队列和观众昵称） | `security.is_host_allowed()`，**所有路径**先查 Host |
+| P0-2 | `ConnectionAbortedError`（WinError 10053）没被捕获，刷满栈 | `CLIENT_GONE = (ConnectionError,)` |
+| P0-3 | 畸形 `Range` 头返回 416，播放器直接放弃 | `_parse_range()` `except ValueError` → 忽略头，按 200 全量 |
+| P0-4 | 有 `Content-Range` 却回 200，播放器 seek 失效 | `_is_partial()` 判定，`206` 与 `Content-Range` 同步 |
+| P0-5 | 500 把内部异常文本回给前端（可能含路径、token） | `DianGeJiError.http_status` 驱动；≥500 只回 `INTERNAL_ERROR` |
+| P0-6 | 超大 `Content-Length` 不读体，socket 里残留请求毒化连接 | 超限 `close_connection = True` |
+
+实测记录（修前 → 修后）：
+
+```
+GET /                 Host=evil.com:8770   200(13610B) → 403
+GET /overlay          Host=evil.com:8770   200         → 403
+GET /asset/hero_web.png Host=evil.com:8770 200         → 403
+GET /api/state        Host=evil.com:8770   403         → 403
+```
+
+`ConnectionAbortedError` 是 `BrokenPipeError`/`ConnectionResetError` 的**兄弟**
+而非子类 —— 这是原代码 `except (BrokenPipeError, ConnectionResetError)` 漏掉它的原因。
+三者共同父类是 `ConnectionError`，所以改成捕获 `ConnectionError`。
+
+另一处 `SO_REUSEADDR` 在 Windows 上允许**重复绑定**（不是 Unix 那种 TIME_WAIT 复用），
+必须配 `SO_EXCLUSIVEADDRUSE`，否则两个实例会同时 listen 同一端口。
+
+新增 26 项测试：`TestRange`+3、`TestPartialResponse`(4)、`TestHostValidation`(6)、
+`TestServerInternals`(4)、`TestErrorDisclosure`(2)、`TestDomainErrors`(4)、`TestBodyDrain`(3)。
+
+## 46 — 修完外审 11 个 P1 + 12 个 P2
+
+P1（会影响真实使用）：
+
+- **补歌持锁联网**：`_idle_lock` 曾包住整个 `registry.resolve()`（重试 8 次），
+  主播点「下一首」最坏等 8 × 15 秒。现在锁只表示「这一轮谁负责」，
+  **抢到立刻释放**，联网在锁外。`test_regressions.py` 用探针 registry 钉死这条。
+- `/api/state` 轮询在队列锁内深拷贝全部历史与日志：加 `include_log=` / `limit=`，
+  轮询走 `include_log=False, limit=50`，默认参数行为不变。
+- `routes.__all__` 漏了 `MIME_PNG`/`MIME_JSON`/`MIME_TEXT`，却导出没用到的
+  `CONSOLE_QUERY`/`APP_NAME`。
+- `app.refresh_sources()` 只打日志却承诺「让音源重新可用」：
+  新增 `QQMusicSource.invalidate()` 清直链/红心歌单缓存（换号后会串号）。
+- `app.py` 里 `registry: object` → `SourceRegistry`；`"?mute=1"` → `constants.CONSOLE_QUERY`。
+- `utils/webhttp.get_json()` 的 `parse_error_ok` 参数从未被使用，删掉。
+- `ui/main_window._load_config()` 是死函数，连带三个 import 一起删。
+- `constants.LOCAL_HOSTS` 缺 `::1`，而 `web.security.LOOPBACK` 又自己补了一份 ——
+  两个真相合一，`is_loopback()` 不再查两遍。
+- `tests/test_layering.py` 里 `web` 与 `ui` 的白名单是**同一份字面量**且过宽，
+  抓不到 `ui → sources` 越层。按实际依赖收紧，并加 7 条参数化禁止边断言。
+
+P2：
+
+- `live/__init__.py` 用 PEP 562 惰性导出，`import diangeji.live` 不再连带加载
+  `client`（`live → live.client → live` 的环消失），旧写法全部兼容。
+- `utils/text.py` 的「避免循环导入」是伪理由（`constants` 零 import）：
+  改成如实注释，并加测试把两份触发词钉在一起。
+- 版本号 `1.1.0` 三处重复 → `__init__` 改为从 `constants` re-export，
+  `pyproject.toml` 是打包必须的第二份，加测试保证两者一致。
+- `py.typed` 在 `package-data` 里声明了但磁盘上没有 → 补上。
+- 死代码：`core.models.PlaybackPhase`、`paths.icon_path`、
+  `core.library.as_legacy_list`、`auth.qrcode_login.png_to_base64`。
+- `web/routes.py` 静态资源循环第三项又回到 `image_dir`（永远命中不了新文件），
+  且 MIME 本来由扩展名决定 → 简化。
+- `ui/main_window.py` 重复的 `import tkinter.font` → 提为模块级。
+- 文档漂移：`docs/architecture.md` 的「锁只有一把」与「持锁不联网」已按实际重写
+  （列了三把锁各自保护什么）；`services/__init__` 声称有 `browser` 模块（不存在）；
+  `logging_setup` 指向 `ui/app.py`（实际是 `ui/main_window.py`）。
+
+测试 324 → **370** 项，全绿。`README.md`、`审查说明.txt` 的计数已同步。
+
+## 47 — 修掉 `except ... as exc` 的延迟引用（真实崩溃）
+
+跑 pyflakes 时发现的，**不是**外审报告里的条目：
+
+```
+ui/main_window.py:85  local variable 'exc' is assigned to but never used
+ui/main_window.py:86  undefined name 'exc'
+```
+
+Python 在 `except` 块结束时执行 `del exc`，而 lambda 是**之后**才跑的：
+
+```python
+except Exception as exc:
+    self._call_ui(lambda: self._fail(f"取二维码失败：{exc}"))   # ← 炸在这里
+```
+
+后果是用户可见的：
+
+- `_fetch_qr()`：扫码登录失败时界面只卡住、不显示任何错误，
+  用户以为程序死了。
+- `_run_bg()`：任何后台动作失败时，「失败」提示根本不出现，
+  按钮还因为 `finally` 里的异常而不复原，只能重启程序。
+
+修法是先把文本取出来再进 lambda。两处都加了注释说明原因。
+
+顺带清掉 9 个未使用的 import（`QQ_COOKIE`、`CDP_PORT_QQ`、`UA_DESKTOP`、
+`base64`、`dataclasses.field` ×2、`os`、`Iterable`、`ensure_dir`、
+`Path`、`Config`、`TrackSource`）—— 多数是前面删死代码后的残留。
+现在 `python -m pyflakes src/diangeji` 零告警。
+
+新增 3 项测试：复现 `NameError`、验证「先取文本」可行、
+以及一条 **AST 静态检查**（`except` 变量被 lambda 引用就红）。
+静态检查拿坏代码验证过确实会触发，不是摆设。
+
+测试 370 → **373** 项。
+
+## 48 — 接上窗口图标，补齐资源存在性测试
+
+`icon.ico` 一直打进 wheel 里，但**全项目没有一处引用它** ——
+任务栏和窗口左上角显示的是 Tk 默认的羽毛。`launch()` 里加一次
+`root.iconbitmap()`，失败就跳过（图标缺失或平台不支持不该带崩启动）。
+
+`py.typed` 是同类问题的另一面：声明在 `package-data` 里，磁盘上没有，
+装完之后 PEP 561 类型提示**静默失效** —— 不报错，只是不生效。
+
+新增 4 项测试把所有「声明了就该存在」的资源钉住：
+
+- `py.typed` 必须在包里
+- 窗口图标必须存在且非空
+- 两份模板必须存在
+- 模板里引用的每个 `/asset/xxx` 都必须能在图片目录里找到（破图检查）
+
+测试 373 → **377** 项。
