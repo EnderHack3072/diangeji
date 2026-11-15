@@ -122,7 +122,7 @@ diangeji --headless   # 只跑服务，不开界面
 │       ├── text.py
 │       └── timeutil.py
 │
-├── tests/                  # 303 项测试，pytest
+├── tests/                  # 314 项测试，pytest
 └── docs/
     └── architecture.md     # 分层约定与依赖规则
 ```
@@ -174,7 +174,9 @@ diangeji --headless   # 只跑服务，不开界面
 
 ## 数据目录
 
-所有运行时数据在 **程序旁边的 `点歌姬数据/`**（绿色软件习惯，卸载直接删）：
+所有运行时数据在 **程序旁边的 `点歌姬数据/`**（绿色软件习惯，卸载直接删）。
+**pip 安装**（没有「程序目录」可言）时改用用户级目录
+`%LOCALAPPDATA%\点歌姬数据`，不跟着启动目录跑。
 
 | 文件 | 内容 |
 |---|---|
@@ -182,12 +184,16 @@ diangeji --headless   # 只跑服务，不开界面
 | `bili_cookie.txt` | B 站登录态 |
 | `qq_cookie.txt` | QQ 音乐登录态 |
 | `idle_pool.txt` | 自定义空闲歌单（每行「歌手 歌名」，`#` 开头跳过） |
+| `danmu_hosts.json` | 弹幕服务器缓存（自动重建，删了没影响） |
 | `logs/diangeji.log` | 运行日志（2MB 轮转，留 3 份） |
 | `_edgeprofile/` | 浏览器登录用的独立配置目录 |
 
-可以用环境变量 `DIANGE_DATA` 改位置。
+可以用环境变量 `DIANGE_DATA` 改位置（打包版、源码运行、pip 安装都适用，
+优先级最高）。
 
 > Cookie 是**明文**存在这里的。发给别人请打包时排除这两个文件。
+
+`config.json` 和 cookie 都是「先写临时文件再替换」，断电不会留半个文件。
 
 ---
 
@@ -224,6 +230,10 @@ diangeji --headless   # 只跑服务，不开界面
 现在前端上报 `{"id": 当前播放项的 id}`，服务端 `skip_if_finished()` 只认
 **当前正在播的那一条**。后到的那个请求因为 id 已经变了会被丢弃。
 
+「比对 id」和「切歌」在 `PlayQueue` 的同一把锁里完成（CAS，
+`advance_if_playing()`），所以两个页面**同时**上报也只会切一次 —— 不会出现
+「各自通过校验，然后各切一次」。
+
 外接 QQ 机器人转发点歌：
 
 ```bash
@@ -232,7 +242,15 @@ curl -X POST http://127.0.0.1:8770/api/order \
      -d '{"user":"群友","text":"点歌 晴天"}'
 ```
 
-脚本没有 `Origin` 头，默认会被拒。启动时加 `--allow-headless-api` 放开。
+脚本没有 `Origin` 头，**默认会被拒**（原版是放行的，这是升级后唯一会破坏
+既有用法的改动）。启动时加 `--allow-headless-api` 放开。
+
+被拒时返回的 403 会带一句提示，日志里也会写明该怎么改，不会静默失败：
+
+```json
+{"ok": false, "error": "forbidden",
+ "hint": "本接口只接受本机浏览器发来的请求。脚本 / QQ 机器人 / 自动化工具请启动时加 --allow-headless-api"}
+```
 
 ---
 
@@ -240,7 +258,7 @@ curl -X POST http://127.0.0.1:8770/api/order \
 
 ```bash
 pip install -e ".[dev]"
-pytest                         # 303 项
+pytest                         # 314 项
 pytest -q tests/test_core.py   # 单文件
 ```
 
@@ -261,7 +279,7 @@ python scripts/build.py
 | `test_infra.py` (58) | cookie 原子写、配置、路径、文本工具 |
 | `test_app.py` (45) | 组合根装配、HTTP 生命周期、模板契约、打包配置、点歌 worker |
 | `test_layering.py` (13) | **架构守卫**：AST 扫依赖方向，违反就红 |
-| `test_regressions.py` (18) | **回归守卫**：修过的 bug 不许复活 |
+| `test_regressions.py` (29) | **回归守卫**：修过的 bug 不许复活 |
 
 后两个文件不测功能，测的是「代码库的整体性质」。
 比如 `test_layering.py` 会断言「没有任何模块 import `ui`」「`core` 不依赖上层」；

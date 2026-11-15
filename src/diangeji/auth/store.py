@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Iterable, Mapping
 
 from ..logging_setup import get_logger
-from ..paths import data_dir, ensure_dir
+from ..paths import atomic_write, data_dir, ensure_dir
 
 log = get_logger(__name__)
 
@@ -93,11 +93,7 @@ class CookieStore:
             return False
         target = self.path(filename)
         try:
-            ensure_dir(target.parent)
-            tmp = target.with_suffix(target.suffix + ".tmp")
-            with open(tmp, "w", encoding="utf-8") as fh:
-                fh.write(text)
-            os.replace(tmp, target)
+            atomic_write(target, text)
         except OSError as exc:
             log.error("写入 %s 失败：%s", filename, exc)
             return False

@@ -198,6 +198,7 @@ class AppWindow:
         root.configure(bg="#f6efff")
         root.resizable(False, False)
         self._closed = False
+        self._closing = False    # 退出流程已启动（防重复点「退出」）
         self._busy = False       # 后台动作（切歌等）进行中，防止重复点击
         import tkinter.font as tkfont
         self._font = tkfont.Font(family="Microsoft YaHei", size=11, weight="bold")
@@ -622,15 +623,50 @@ class AppWindow:
         self._open_url(self.app.overlay_url())
 
     def quit(self) -> None:
-        self._closed = True
-        self.log("正在退出…")
+        """退出：先给页面一点收尾时间，再在后台真正关服务。
+
+        ``shutdown()`` 要停 HTTP、join 线程，可能卡几百毫秒 —— 放在 Tk 回调里
+        会让窗口白住一下，所以丢后台，完成后回主线程销毁窗口。
+        """
+        if self._closing:            # 已经点过退出，别重复来一遍
+            return
+        self._closing = True
+
+        # 浏览器页面还在轮询 = 它开着。旧版会等 3.6 秒让它把最后一句播完，
+        # 直接 destroy 会让 OBS 那一层瞬间黑屏。
         try:
-            self.app.shutdown()
-        finally:
+            grace = 3600 if self.app.playback.queue.last_seen_within(10.0) else 0
+        except Exception:  # pragma: no cover
+            grace = 0
+        if grace:
+            self.log("页面还连着，先让最后一段播完…")
+
+        def finish() -> None:
+            self.log("正在退出…")
             try:
-                self.root.after(200, self.root.destroy)
+                self.app.shutdown()
+            except Exception as exc:  # pragma: no cover
+                log.exception("退出时出错")
+                self.log(f"退出时有异常：{exc}")
+            try:
+                self.root.after(0, self._destroy)
             except Exception:
                 pass
+
+        def start() -> None:
+            threading.Thread(target=finish, name="shutdown", daemon=True).start()
+
+        try:
+            self.root.after(grace, start)
+        except Exception:  # pragma: no cover - 窗口已没了
+            start()
+
+    def _destroy(self) -> None:
+        self._closed = True
+        try:
+            self.root.destroy()
+        except Exception:  # pragma: no cover
+            pass
 
 
 def launch(app, *, args=None) -> int:

@@ -44,6 +44,9 @@ MIME_HTML = "text/html; charset=utf-8"
 MIME_JSON = "application/json; charset=utf-8"
 MIME_TEXT = "text/plain; charset=utf-8"
 
+#: 「需要 --allow-headless-api」这条提示每次启动只喊一次，别刷屏
+_HEADLESS_HINTED = False
+
 
 @dataclass
 class AppContext:
@@ -93,7 +96,9 @@ class RequestHandler(BaseHTTPRequestHandler):
         self._send(code, json.dumps(payload, ensure_ascii=False), MIME_JSON)
 
     def _forbidden(self) -> None:
-        self._json({"ok": False, "error": "forbidden"}, 403)
+        hint = ("本接口只接受本机浏览器发来的请求。脚本 / QQ 机器人 / 自动化工具"
+                "请启动时加 --allow-headless-api")
+        self._json({"ok": False, "error": "forbidden", "hint": hint}, 403)
 
     def _check_local(self, path: str) -> bool:
         """/api/* 走严格校验；静态资源不校验（本来就是给本机页面用的）。"""
@@ -101,7 +106,20 @@ class RequestHandler(BaseHTTPRequestHandler):
             return True
         if is_local_request(self.headers, allow_headless=self.ctx.allow_headless):
             return True
-        log.warning("拒绝非本机请求：%s %s", self.command, path)
+        has_browser_header = any(self.headers.get(name)
+                                 for name in ("Origin", "Referer"))
+        if has_browser_header:
+            log.warning("拒绝非本机请求：%s %s（Origin/Referer 不是回环地址）",
+                        self.command, path)
+        else:
+            global _HEADLESS_HINTED
+            if not _HEADLESS_HINTED:
+                _HEADLESS_HINTED = True
+                log.warning(
+                    "拒绝无 Origin/Referer 的请求：%s %s —— 这是默认拒绝策略。"
+                    "如果你在用脚本 / QQ 机器人调接口，请改用 "
+                    "`diangeji --allow-headless-api` 启动（同一次启动只需提示一次）。",
+                    self.command, path)
         return False
 
     def _body(self) -> dict[str, Any]:

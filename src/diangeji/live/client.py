@@ -21,6 +21,7 @@ from typing import Callable
 
 from ..constants import BILI_LIVE_URL, UA_DESKTOP
 from ..logging_setup import get_logger
+from ..paths import atomic_write
 from ..utils.webhttp import get_json
 from ..utils.ws import WSClient, WebSocketError
 from . import protocol
@@ -322,9 +323,10 @@ class DanmakuClient:
     def _write_host_cache(self, hosts: list[str], token: str, room: int) -> None:
         if not self.cache_path:
             return
+        payload = json.dumps({"ts": time.time(), "hosts": hosts,
+                              "token": token, "room": room})
         try:
-            with open(self.cache_path, "w", encoding="utf-8") as fh:
-                json.dump({"ts": time.time(), "hosts": hosts, "token": token, "room": room}, fh)
+            atomic_write(self.cache_path, payload)
         except OSError:
             pass
 

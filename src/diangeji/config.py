@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .paths import data_dir, ensure_dir
+from .paths import atomic_write, data_dir
 
 CONFIG_FILENAME = "config.json"
 
@@ -61,9 +61,5 @@ class Config:
     def save(self, path: Path | None = None) -> Path:
         """原子写入配置（先写临时文件再替换，断电不留半个 JSON）。"""
         target = path or (data_dir() / CONFIG_FILENAME)
-        ensure_dir(target.parent)
-        tmp = target.with_suffix(target.suffix + ".tmp")
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(asdict(self), fh, ensure_ascii=False, indent=2)
-        tmp.replace(target)
+        atomic_write(target, json.dumps(asdict(self), ensure_ascii=False, indent=2))
         return target

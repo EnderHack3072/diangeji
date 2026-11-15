@@ -116,7 +116,7 @@ WebSocket 客户端原来无帧长上限、缓冲区 O(n²) 追加、ping 递归
 
 ## 17 — 新增测试套件
 
-`tests/` 下 303 项测试，覆盖：
+`tests/` 下 314 项测试，覆盖：
 
 - `test_core.py` 曲库匹配、队列状态机、模型
 - `test_sources.py` 音源优先级、直链刷新、空闲随机
@@ -225,7 +225,7 @@ HEAD 不带 body、403 后连接可继续、WebSocket 失败关 socket、
 ## 30 — 测试从 182 项扩到 303 项
 
 新增 `test_sources.py`（40）、`test_app.py`（45）、`test_layering.py`（13）、
-`test_regressions.py`（18），并修正了若干与真实 API 不符的测试假设。
+`test_regressions.py`（29），并修正了若干与真实 API 不符的测试假设。
 
 ## 31 — 修复控制台中文日志乱码
 
@@ -256,4 +256,92 @@ Windows 控制台默认 GBK 代码页，`StreamHandler(sys.stderr)` 打中文日
 
 `test_app.py` 新增 `TestOrderWorker`（5 项）：点歌立即返回不阻塞、多首点歌
 保持顺序、解析失败仍入队、shutdown 停掉 worker、重复 shutdown 安全。
+
+## 35 — 双跳歌彻底修死（check-then-act → CAS）
+
+`playback.skip_if_finished()` 原本是「先读 `queue.playing` 比对 id，再调
+`next()`」—— 两步之间没有锁，两个页面**同时**上报 ended 时可能各自通过校验
+再各切一次。第一版修法只挡掉了「稳定跳两首」，窗口还在。
+
+`PlayQueue` 新增 `advance_if_playing(item_id, refresh)`，把「比对 id」和
+「占住播放位」放进同一把锁，返回 `(是否切了, 快照)`。
+`skip_if_finished()` 改走它。`test_regressions.py::TestConcurrentAdvanceIsAtomic`
+用 4 个线程 + Barrier 同时上报同一个 id，断言只有 1 个生效。
+
+## 36 — `previous()` 不再吞掉并发点歌
+
+`previous()` 锁外刷直链后重锁，**无条件** `self._playing = target` ——
+这期间观众点歌刚顶上去的那首会被直接覆盖掉（`advance()` 有
+`if self._playing is None` 保护，`previous()` 漏了）。
+
+改为对齐 `advance()`：播放位已被占就把历史项退回历史并记日志。
+
+## 37 — pip 安装时数据目录不再跟着 cwd 跑
+
+`paths.base_dir()` 在「非 frozen 且非 src 布局」时返回 `Path.cwd()` ——
+pip 装在 site-packages 的用户从 A 目录启动和从 B 目录启动会得到**两份独立数据**，
+看起来就像配置和登录凭空丢了。
+
+新增 `user_data_dir()`：Windows 走 `%LOCALAPPDATA%\点歌姬数据`，
+macOS 走 `~/Library/Application Support/`，其他走 `$XDG_DATA_HOME`。
+源码运行和打包 exe 的行为不变（仍然跟着程序目录走）。
+
+## 38 — 403 不再静默
+
+原版 `server.py` 对没有 Origin/Referer 的请求是**放行**的；新版默认拒绝。
+挂过 QQ 机器人/脚本的用户升级后会静默 403，且日志只有一行泛泛的
+「拒绝非本机请求」，看不出该怎么办。
+
+- 403 响应体新增 `hint` 字段，直接写明要加 `--allow-headless-api`
+- 日志区分「Origin 不是回环」和「完全没有浏览器头」两种情况，
+  后者每次启动只喊一次，并明确给出解决办法
+
+## 39 — 原子写统一走 `paths.atomic_write()`
+
+`auth/store.py` 和 `config.py` 各写一份原子写，且都有同一个毛病：
+失败时把 `.tmp` 留在数据目录里。`live/client.py` 的 `danmu_hosts.json`
+干脆还是裸 `open(...,"w")`。
+
+统一抽成 `paths.atomic_write()` / `paths.discard()`，三处共用，失败必清临时文件。
+
+顺带修掉一个更严重的问题：原来临时文件固定叫 `xxx.tmp`，**多个线程同时写
+同一个目标会互相踩**（Windows 上表现为 `PermissionError` / `WinError 32`，
+抢到的那个 `os.replace` 还可能换上半截内容）。现在文件名带 pid + 线程 id +
+随机后缀，替换这一步在 Windows 上带退避重试。
+
+`tests/test_infra.py::TestCookieStore::test_concurrent_writes_do_not_corrupt`
+原本就是因为这个问题偶发失败，现在稳定通过。
+
+## 40 — 退出流程：日志可见 + 不卡界面 + 给页面收尾时间
+
+`AppWindow.quit()` 原本先 `self._closed = True` 再 `self.log("正在退出…")` ——
+日志函数看到 `_closed` 就跳过，这行永远不会显示；而且 `shutdown()` 在 Tk
+回调里同步跑，会停 HTTP、join 线程，窗口白住一下。
+
+- 用独立的 `_closing` 标志防重复点击，`_closed` 留给真正的窗口销毁
+- `shutdown()` 丢后台线程，完成后 `root.after(0, destroy)`
+- 恢复了旧版那段宽限：页面还在轮询（`queue.last_seen_within(10)`）就等
+  3.6 秒再关，免得 OBS 那一层瞬间黑屏
+
+`last_seen_within()` 之前全仓库没调用，现在接上了。
+
+## 41 — 测试扩到 314 项
+
+`test_regressions.py` 从 18 项加到 29 项，新增：CAS 并发切歌只有一次生效、
+`previous()` 不吞新点歌、原子写失败不留 `.tmp`、8 线程并发写同一目标、
+数据目录不跟 cwd、403 响应带提示。
+
+## 42 — 修掉第 37 条引入的双层数据目录
+
+第 37 条改 `base_dir()` 时图省事让它直接返回「用户数据目录」，
+而 `data_dir()` 本来就会再拼一层 `点歌姬数据` —— 结果 pip 安装下变成
+`%LOCALAPPDATA%\点歌姬数据\点歌姬数据`。
+
+`base_dir()` 现在返回的是**父目录**（`%LOCALAPPDATA%` 本身），
+目录名统一由 `data_dir()` 拼。三种形态实测：
+frozen → `exe目录\点歌姬数据`，源码 → `项目根\点歌姬数据`，
+pip → `%LOCALAPPDATA%\点歌姬数据`，都不再嵌套。
+
+原来的测试只断言了「不等于 cwd」，没看结果形状，所以没拦住 ——
+补了一条 `test_installed_data_dir_has_no_double_nesting`。
 

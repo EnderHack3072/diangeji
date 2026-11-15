@@ -73,12 +73,16 @@ class PlaybackService:
         只有 **当前播放的那一条** 且 ID 对得上才切歌 —— 这是修掉
         「开两个页面（主播台静音 + OBS 层）导致一首歌跳两首」的关键：
         后到的那个 ended 事件会因为 ID 已变而被丢弃。
+
+        「比对 id」和「切歌」在 ``PlayQueue`` 的同一把锁里完成（CAS），
+        所以两个页面**同时**上报也不会各切一次。
         """
-        current = self.queue.playing
-        if current is None or current.id != item_id:
+        switched, _ = self.queue.advance_if_playing(item_id,
+                                                    refresh=self._refresh_item)
+        if not switched:
             log.debug("忽略过期的播放结束事件：%s", item_id)
             return False
-        self.next()
+        self._maybe_idle()
         return True
 
     def _refresh_item(self, item: QueueItem) -> QueueItem:

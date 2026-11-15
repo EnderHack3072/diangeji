@@ -136,8 +136,27 @@ class PlayQueue:
 
     def advance(self, refresh: RefreshFn | None = None) -> dict[str, Any]:
         """下一首：当前进历史，从队列取下一个。``refresh`` 在锁外执行。"""
+        return self._advance(refresh, None)[1]
+
+    def advance_if_playing(self, item_id: str,
+                           refresh: RefreshFn | None = None) -> tuple[bool, dict[str, Any]]:
+        """只有当前播放项 id 与 ``item_id`` 相符才切歌（CAS）。
+
+        返回 ``(是否切了, 快照)``。「比对 id」和「占住播放位」在同一把锁里完成 ——
+        否则两个页面（主播台静音 + OBS 层）同时上报 ended 时，可能各自通过
+        校验再各切一次，就是最初那个「一首歌跳两首」。
+        """
+        return self._advance(refresh, item_id)
+
+    def _advance(self, refresh: RefreshFn | None,
+                 expected_id: str | None) -> tuple[bool, dict[str, Any]]:
         with self._lock:
             current = self._playing
+            if expected_id is not None:
+                if current is None or current.id != expected_id:
+                    log.debug("忽略过期的播放结束事件：%s（当前 %s）",
+                              expected_id, current.id if current else None)
+                    return False, self.snapshot()
             if current is not None:
                 self._push_history_locked(current)
             self._playing = None
@@ -159,7 +178,7 @@ class PlayQueue:
             elif candidate is not None:
                 # 锁外那段时间有人点歌抢了播放位，把它塞回队首
                 self._queue.insert(0, candidate)
-            return self.snapshot()
+            return True, self.snapshot()
 
     def previous(self, refresh: RefreshFn | None = None) -> dict[str, Any]:
         """上一首：历史弹回播放位，当前进队首。"""
@@ -179,8 +198,14 @@ class PlayQueue:
                 log.warning("刷新直链失败：%s", exc)
 
         with self._lock:
-            self._playing = target.with_playback_started()
-            self.note("上一首 → " + target.title)
+            # 锁外刷直链这段时间，可能有人点歌把播放位顶了（push → 开播）。
+            # 无条件赋值会把那一首吞掉，所以和 advance() 保持同样的保护。
+            if self._playing is None:
+                self._playing = target.with_playback_started()
+                self.note("上一首 → " + target.title)
+            else:
+                self._history.append(target)
+                self.note("上一首被新点歌抢位，退回历史")
             return self.snapshot()
 
     def start_now(self, item: QueueItem) -> None:

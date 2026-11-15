@@ -265,6 +265,20 @@ B 站弹幕服务器
 | 加弹幕新指令（比如「切歌」） | `live/commands.py` + `client.py` 回调 | `app.py` 接回调 |
 | 加配置项 | `config.py` 的 `Config` | 界面读 `app.config` |
 | 改日志格式 | `logging_setup.py` | 不动 |
+| 写任何文件 | `paths.atomic_write()` | 别自己拼 `.tmp` 名字 |
+| 往数据目录加状态文件 | `paths.data_dir()` | 别用相对路径 |
+
+### 两条容易踩的约定
+
+**写文件一律 `paths.atomic_write()`。** 它保证断电不留半个文件，并且临时
+文件名带 pid + 线程 id + 随机后缀 —— 固定叫 `x.tmp` 的话，两个线程同时写
+同一个目标会互相踩（Windows 上直接 `PermissionError`）。它还在 Windows 上
+对 `os.replace` 做了退避重试，因为覆盖一个正被打开的文件会短暂失败。
+
+**要先比对再改状态，就用 CAS 形式。** `queue.advance()` 单纯切歌；
+`queue.advance_if_playing(id)` 把「比对 id」和「占住播放位」放进同一把锁，
+返回 `(是否切了, 快照)`。`playback.skip_if_finished()` 走的是后者 ——
+分成两步（先读 id 再调 next）在两个页面同时上报时会各切一次。
 
 ---
 
@@ -291,7 +305,7 @@ B 站弹幕服务器
 | `test_live.py` / `test_web.py` | 协议与 HTTP 边界 | 103 |
 | `test_infra.py` / `test_app.py` | 基础设施与装配 | 103 |
 | `test_layering.py` | **架构规则没被破坏** | 13 |
-| `test_regressions.py` | **修过的 bug 没有复活** | 18 |
+| `test_regressions.py` | **修过的 bug 没有复活** | 29 |
 
 后两类是「元测试」：它们不测功能，测的是「代码库的整体性质」。
 `test_layering.py` 用 AST 扫依赖方向；`test_regressions.py` 里每一条都对应
